@@ -42,12 +42,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.isAnalysing = False
         self.is8bitImage = False
         self.imageData = []
+        self.rawImage = []
+        self.analysisImage = []
+        self.displayImage = []
         self.specData = []
+        self.specDataRaw = []
         self.noiseSpec = []
         self.TPSParabola = []
         self.analysingFileList = []
         self.analysingDataList = []
         self.cutoffEnergyList = []
+        self.spectrumSmoothWindow = 31
+        self.cutoffSnrThreshold = 3.0
+        self.cutoffConsecutiveBins = 3
+        self.adaptiveMinCounts = 100
+        self.weightedSmoothFactor = 1.5
+        self.isManualCursor = False
+        self.isDrawingMask = False
+        self.manualMaskPoints = []
+        self.manualMaskPolygons = []
+        self.manualMask = None
+        self.maskClickId = None
+        self.showManualMaskOverlay = False
+        self.maskBgSigma = 3
+        self.maskBgPercentile = 35
+        self.backgroundMode = "offset"
+        self.backgroundOffset = -18
+        self.backgroundWidth = 6
 
         # 初始化文件列表
         TSettings.getList(self)
@@ -153,6 +174,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 图片缩放
         self.ui.pushButton_zoom.toggled.connect(self.startZoom)
         self.ui.pushButton_origin.clicked.connect(self.stopZoom)
+        self.imageFig.canvas.mpl_connect('scroll_event', self.wheelZoom)
 
         # 点击能谱曲线移动光标
         self.specFig.canvas.mpl_connect('button_press_event', self.setSpecCursor)
@@ -327,6 +349,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def selectImage(self, item):
         if self.isAnalysing == False:
+            self.isManualCursor = False
             self.imageFileName = os.path.join(self.imagePath, item.text())
             TSolve.Solve(self)
         else:
@@ -414,13 +437,28 @@ class MainWindow(QtWidgets.QMainWindow):
                         os.path.split(self.imageFileName)[1])[0] + "_" + str(ene) + "MeV.png"))
                     specDataFileName = os.path.normcase(os.path.join(self.savePath, os.path.splitext(
                         os.path.split(self.imageFileName)[1])[0] + "_" + str(ene) + "MeV.txt"))
-                self.specFig.savefig(specPicFileName)
-                np.savetxt(specDataFileName, self.specData.transpose(), delimiter='\t', newline='\n', encoding='utf-8')
+                self.specFig.savefig(specPicFileName, dpi=300)
+                if hasattr(self, "specDataRaw") and len(self.specDataRaw) != 0:
+                    net_values = self.specDataNet[1] if hasattr(self, "specDataNet") else self.specDataRaw[1]
+                    specOut = np.column_stack((
+                        self.specDataRaw[0],
+                        self.specDataRaw[1],
+                        net_values,
+                        self.specData[1],
+                        self.noiseSpec[1]
+                    ))
+                    np.savetxt(
+                        specDataFileName, specOut, delimiter='\t', newline='\n',
+                        header='Energy_MeV\td2N_dE_dOmega_raw_center\td2N_dE_dOmega_background_subtracted\td2N_dE_dOmega_smoothed\td2N_dE_dOmega_background',
+                        encoding='utf-8'
+                    )
+                else:
+                    np.savetxt(specDataFileName, self.specData.transpose(), delimiter='\t', newline='\n', encoding='utf-8')
             else:
                 timeformat = "%Y%m%d-%H%M%S"
                 time = datetime.datetime.now().strftime(timeformat)
                 specPicFileName = os.path.normcase(os.path.join(self.savePath, "Analysing_" + time + ".png"))
-                self.specFig.savefig(specPicFileName)
+                self.specFig.savefig(specPicFileName, dpi=300)
 
     def saveImage(self):
         if os.path.isfile(self.imageFileName):
@@ -432,6 +470,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.zoomStart = [event.xdata, event.ydata]
 
     def zoom(self, event):
+        if self.zoomStart[0] is None or self.zoomStart[1] is None or event.xdata is None or event.ydata is None:
+            self.ui.pushButton_zoom.setChecked(False)
+            return
         self.zoomEnd = [event.xdata, event.ydata]
         self.ui.pushButton_zoom.setChecked(False)
 
@@ -447,18 +488,82 @@ class MainWindow(QtWidgets.QMainWindow):
         self.zoomArea[2] = np.max([np.ceil(self.zoomStart[1]), np.ceil(self.zoomEnd[1])])
         self.zoomArea = self.zoomArea.astype(int)
 
-        self.zoomToOrigin = [self.zoomArea[0] + self.zoomToOrigin[0], self.zoomArea[1] + self.zoomToOrigin[1],
-                             self.zoomToOrigin[2] - (self.zoomPic.shape[0] - 1 - self.zoomArea[2]),
-                             self.zoomToOrigin[3] - (self.zoomPic.shape[1] - 1 - self.zoomArea[3])]
+        new_area = [self.zoomArea[0] + self.zoomToOrigin[0], self.zoomArea[1] + self.zoomToOrigin[1],
+                    self.zoomToOrigin[2] - (self.zoomPic.shape[0] - 1 - self.zoomArea[2]),
+                    self.zoomToOrigin[3] - (self.zoomPic.shape[1] - 1 - self.zoomArea[3])]
+        self.setImageZoomWindow(new_area)
 
-        self.zoomPic = self.zoomPic[self.zoomArea[0]:self.zoomArea[2], self.zoomArea[1]:self.zoomArea[3]]
+    def setImageZoomWindow(self, area):
+        height, width = self.imageData.shape
+        y0, x0, y1, x1 = [int(v) for v in area]
+        y0 = max(0, min(y0, height - 2))
+        x0 = max(0, min(x0, width - 2))
+        y1 = max(y0 + 1, min(y1, height - 1))
+        x1 = max(x0 + 1, min(x1, width - 1))
+
+        if y0 <= 0 and x0 <= 0 and y1 >= height - 1 and x1 >= width - 1:
+            self.stopZoom()
+            return
+
+        self.zoomed = True
+        self.zoomToOrigin = [y0, x0, y1, x1]
+        self.zoomPic = self.imageData[y0:y1 + 1, x0:x1 + 1]
         self.zoomPara = TPSParabola.ZoomPara(self.TPSParabola, self.zoomToOrigin, self.zoomPic.shape[1])
+        if hasattr(self, 'backgroundParabola'):
+            self.zoomBackgroundPara = TPSParabola.ZoomPara(self.backgroundParabola, self.zoomToOrigin, self.zoomPic.shape[1])
         self.zoomImageCursor = TPSParabola.zoomCutoffLine(self.imageCursor, self.zoomToOrigin)
 
         TDraw.DrawImage(self)
         TDraw.DrawSpec(self)
         if self.isShowParabola:
             TDraw.DrawParabola(self)
+
+    def wheelZoom(self, event):
+        if event.inaxes != getattr(self, 'ax_image', None) or event.xdata is None or event.ydata is None:
+            return
+        if self.imageData is None or len(self.imageData) == 0:
+            return
+
+        height, width = self.imageData.shape
+        if self.zoomed:
+            cur_y0, cur_x0, cur_y1, cur_x1 = self.zoomToOrigin
+            center_x = cur_x0 + event.xdata
+            center_y = cur_y0 + event.ydata
+            cur_w = cur_x1 - cur_x0 + 1
+            cur_h = cur_y1 - cur_y0 + 1
+        else:
+            center_x = event.xdata
+            center_y = event.ydata
+            cur_w = width
+            cur_h = height
+
+        scale = 0.8 if event.button == 'up' else 1.25
+        new_w = int(max(20, min(width, cur_w * scale)))
+        new_h = int(max(20, min(height, cur_h * scale)))
+
+        if new_w >= width - 1 and new_h >= height - 1:
+            self.stopZoom()
+            return
+
+        x0 = int(round(center_x - new_w / 2))
+        y0 = int(round(center_y - new_h / 2))
+        x1 = x0 + new_w - 1
+        y1 = y0 + new_h - 1
+
+        if x0 < 0:
+            x1 -= x0
+            x0 = 0
+        if y0 < 0:
+            y1 -= y0
+            y0 = 0
+        if x1 >= width:
+            x0 -= x1 - width + 1
+            x1 = width - 1
+        if y1 >= height:
+            y0 -= y1 - height + 1
+            y1 = height - 1
+
+        self.setImageZoomWindow([y0, x0, y1, x1])
 
     def closeEvent(self, event):
         self.ui.radioButton_offline.setChecked(True)
@@ -486,6 +591,9 @@ class MainWindow(QtWidgets.QMainWindow):
             TDraw.DrawParabola(self)
 
     def setSpecCursor(self, event):
+        if event.xdata is None:
+            return
+        self.isManualCursor = True
         if self.isAnalysing == False:
             self.specCursor = event.xdata
             self.imageCursor = TPSParabola.CutoffLine(self.TPS, self.specCursor, self.X0, self.A, self.Z)
@@ -499,6 +607,333 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.specCursor = event.xdata
             TDraw.DrawAnalysingSpec(self)
+
+    def startManualMask(self):
+        if self.imageFileName == "." or not os.path.isfile(self.imageFileName):
+            return
+        if self.ui.pushButton_zoom.isChecked():
+            self.ui.pushButton_zoom.setChecked(False)
+        self.isDrawingMask = True
+        self.showManualMaskOverlay = True
+        self.manualMaskPoints = []
+        if self.maskClickId is None:
+            self.maskClickId = self.imageFig.canvas.mpl_connect('button_press_event', self.addManualMaskPoint)
+        print("[PyTPS] 开始手动画Mask：在图像上左键依次点多边形边界。")
+
+    def addManualMaskPoint(self, event):
+        if not self.isDrawingMask or event.inaxes != getattr(self, 'ax_image', None):
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        image_x, image_y = self.mapDisplayedPointToImage(event.xdata, event.ydata)
+        self.manualMaskPoints.append((image_x, image_y))
+        self.ax_image.plot(event.xdata, event.ydata, marker='o', color='lime', markersize=3)
+        if len(self.manualMaskPoints) > 1:
+            x0, y0 = self.mapImagePointToDisplayed(*self.manualMaskPoints[-2])
+            self.ax_image.plot([x0, event.xdata], [y0, event.ydata], color='lime', linewidth=1)
+        self.imageCanvas.draw_idle()
+
+    def mapDisplayedPointToImage(self, x, y):
+        if self.zoomed:
+            return x + self.zoomToOrigin[1], y + self.zoomToOrigin[0]
+        return x, y
+
+    def mapImagePointToDisplayed(self, x, y):
+        if self.zoomed:
+            return x - self.zoomToOrigin[1], y - self.zoomToOrigin[0]
+        return x, y
+
+    def finishManualMaskPolygon(self):
+        if len(self.manualMaskPoints) < 3:
+            return
+        self.manualMaskPolygons.append(list(self.manualMaskPoints))
+        x0, y0 = self.mapImagePointToDisplayed(*self.manualMaskPoints[-1])
+        x1, y1 = self.mapImagePointToDisplayed(*self.manualMaskPoints[0])
+        self.ax_image.plot([x0, x1], [y0, y1], color='lime', linewidth=1)
+        self.manualMaskPoints = []
+        self.imageCanvas.draw_idle()
+        print(f"[PyTPS] 已闭合Mask多边形，总数={len(self.manualMaskPolygons)}")
+
+    def buildManualMask(self):
+        return self.buildMaskFromPolygons(self.manualMaskPolygons)
+
+    def buildMaskFromPolygons(self, polygons):
+        if not polygons:
+            return None
+        from matplotlib.path import Path
+        height, width = self.imageData.shape
+        yy, xx = np.mgrid[:height, :width]
+        points = np.column_stack((xx.ravel(), yy.ravel()))
+        mask = np.zeros((height, width), dtype=bool)
+        for polygon in polygons:
+            path = Path(polygon)
+            mask |= path.contains_points(points).reshape((height, width))
+        return mask
+
+    def applyManualMask(self):
+        if self.isDrawingMask and len(self.manualMaskPoints) >= 3:
+            self.finishManualMaskPolygon()
+        mask = self.buildManualMask()
+        if mask is None:
+            return
+        import TFilter
+        self.manualMask = mask
+        self.showManualMaskOverlay = False
+        source = getattr(self, 'baseDisplayImage', self.imageData)
+        self.displayImage = TFilter.applyManualMaskDisplay(
+            source,
+            mask,
+            bg_sigma=getattr(self, 'maskBgSigma', 3),
+            bg_percentile=getattr(self, 'maskBgPercentile', 35)
+        )
+        self.imageData = self.displayImage
+        if self.zoomed:
+            self.zoomPic = self.displayImage[
+                self.zoomToOrigin[0]:self.zoomToOrigin[2] + 1,
+                self.zoomToOrigin[1]:self.zoomToOrigin[3] + 1
+            ]
+        else:
+            self.zoomPic = self.displayImage
+        self.isDrawingMask = False
+        TDraw.DrawImage(self)
+        if self.isShowParabola:
+            TDraw.DrawParabola(self)
+        TDraw.DrawOrigin(self)
+        print("[PyTPS] 已应用手工Mask：Mask内保留，Mask外匀化为背景。")
+
+    def drawManualMaskOverlay(self):
+        if not hasattr(self, 'ax_image'):
+            return
+        if self.manualMask is not None and getattr(self, 'showManualMaskOverlay', False):
+            mask = self.manualMask
+            if self.zoomed:
+                mask = mask[
+                    self.zoomToOrigin[0]:self.zoomToOrigin[2] + 1,
+                    self.zoomToOrigin[1]:self.zoomToOrigin[3] + 1
+                ]
+            overlay = np.zeros((*mask.shape, 4), dtype=float)
+            overlay[..., 1] = 1.0
+            overlay[..., 3] = mask.astype(float) * 0.25
+            self.ax_image.imshow(overlay, extent=(-0.5, mask.shape[1] - 0.5, mask.shape[0] - 0.5, -0.5))
+        if getattr(self, 'showManualMaskOverlay', False) or self.isDrawingMask:
+            self.drawManualMaskPolygons()
+
+    def drawManualMaskPolygons(self):
+        if not hasattr(self, 'ax_image'):
+            return
+        for polygon in self.manualMaskPolygons:
+            if len(polygon) < 2:
+                continue
+            pts = [self.mapImagePointToDisplayed(x, y) for x, y in polygon]
+            xs = [p[0] for p in pts] + [pts[0][0]]
+            ys = [p[1] for p in pts] + [pts[0][1]]
+            self.ax_image.plot(xs, ys, color='lime', linewidth=1)
+            self.ax_image.plot(xs[:-1], ys[:-1], linestyle='', marker='o', color='lime', markersize=3)
+        if len(self.manualMaskPoints) > 0:
+            pts = [self.mapImagePointToDisplayed(x, y) for x, y in self.manualMaskPoints]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            self.ax_image.plot(xs, ys, color='lime', linewidth=1)
+            self.ax_image.plot(xs, ys, linestyle='', marker='o', color='lime', markersize=3)
+
+    def clearManualMask(self):
+        self.isDrawingMask = False
+        self.manualMaskPoints = []
+        self.manualMaskPolygons = []
+        self.manualMask = None
+        self.showManualMaskOverlay = False
+        if hasattr(self, 'baseDisplayImage'):
+            self.displayImage = self.baseDisplayImage.copy()
+            self.imageData = self.displayImage
+            if self.zoomed:
+                self.zoomPic = self.displayImage[
+                    self.zoomToOrigin[0]:self.zoomToOrigin[2] + 1,
+                    self.zoomToOrigin[1]:self.zoomToOrigin[3] + 1
+                ]
+            else:
+                self.zoomPic = self.displayImage
+            TDraw.DrawImage(self)
+            if self.isShowParabola:
+                TDraw.DrawParabola(self)
+                TDraw.DrawOrigin(self)
+        print("[PyTPS] 已清除手工Mask。")
+
+    def setMaskBgSigma(self):
+        try:
+            value = float(self.lineEdit_maskBgSigma.text())
+            value = max(0.0, min(50.0, value))
+            self.maskBgSigma = value
+            self.lineEdit_maskBgSigma.setText(str(value))
+        except ValueError:
+            self.lineEdit_maskBgSigma.setText(str(self.maskBgSigma))
+
+    def setMaskBgPercentile(self):
+        try:
+            value = float(self.lineEdit_maskBgPercentile.text())
+            value = max(0.0, min(100.0, value))
+            self.maskBgPercentile = value
+            self.lineEdit_maskBgPercentile.setText(str(value))
+        except ValueError:
+            self.lineEdit_maskBgPercentile.setText(str(self.maskBgPercentile))
+
+    def setBackgroundMode(self, index):
+        self.backgroundMode = "offset" if index == 0 else "sideband"
+        if self.imageFileName != "." and os.path.isfile(self.imageFileName):
+            TSolve.Solve(self)
+
+    def setBackgroundOffset(self):
+        try:
+            value = float(self.lineEdit_bgOffset.text())
+            value = max(-200.0, min(200.0, value))
+            self.backgroundOffset = value
+            self.lineEdit_bgOffset.setText(str(value))
+            if self.imageFileName != "." and os.path.isfile(self.imageFileName):
+                TSolve.Solve(self)
+        except ValueError:
+            self.lineEdit_bgOffset.setText(str(self.backgroundOffset))
+
+    def setBackgroundWidth(self):
+        try:
+            value = float(self.lineEdit_bgWidth.text())
+            value = max(1.0, min(100.0, value))
+            self.backgroundWidth = value
+            self.lineEdit_bgWidth.setText(str(value))
+            if self.imageFileName != "." and os.path.isfile(self.imageFileName):
+                TSolve.Solve(self)
+        except ValueError:
+            self.lineEdit_bgWidth.setText(str(self.backgroundWidth))
+
+    def setSpectrumSmoothWindow(self):
+        try:
+            value = int(self.lineEdit_smoothWindow.text())
+            value = max(3, min(201, value))
+            if value % 2 == 0:
+                value += 1
+            self.spectrumSmoothWindow = value
+            self.lineEdit_smoothWindow.setText(str(value))
+            if self.imageFileName != "." and os.path.isfile(self.imageFileName):
+                TSolve.Solve(self)
+        except ValueError:
+            self.lineEdit_smoothWindow.setText(str(self.spectrumSmoothWindow))
+
+    def saveManualMask(self):
+        if self.manualMask is None:
+            mask = self.buildManualMask()
+            if mask is None:
+                return
+            self.manualMask = mask
+
+        mask_dir = os.path.join(self.savePath, "masks")
+        os.makedirs(mask_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(self.imageFileName))[0]
+        mask_path = os.path.join(mask_dir, stem + "_mask.png")
+        overlay_path = os.path.join(mask_dir, stem + "_overlay.png")
+        json_path = os.path.join(mask_dir, stem + "_mask.json")
+
+        from imageio.v3 import imwrite
+        import json
+
+        saved_polygons = []
+        if os.path.isfile(json_path):
+            with open(json_path, "r", encoding="utf-8") as f:
+                old_metadata = json.load(f)
+            saved_polygons = old_metadata.get("polygons", [])
+
+        new_polygons = [
+            [[float(x), float(y)] for x, y in polygon]
+            for polygon in self.manualMaskPolygons
+        ]
+        merged_polygons = []
+        seen = set()
+        for polygon in saved_polygons + new_polygons:
+            key = tuple((round(float(x), 3), round(float(y), 3)) for x, y in polygon)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_polygons.append(polygon)
+        merged_mask = self.buildMaskFromPolygons(merged_polygons)
+        if merged_mask is not None:
+            self.manualMask = merged_mask
+            self.manualMaskPolygons = merged_polygons
+
+        mask_img = (self.manualMask.astype(np.uint8) * 255)
+        imwrite(mask_path, mask_img)
+
+        fig = plt.figure()
+        ax = fig.subplots()
+        ax.imshow(getattr(self, 'rawImage', self.imageData), cmap=self.cmap, vmin=self.colormin, vmax=self.colormax)
+        overlay = np.zeros((*self.manualMask.shape, 4), dtype=float)
+        overlay[..., 1] = 1.0
+        overlay[..., 3] = self.manualMask.astype(float) * 0.35
+        ax.imshow(overlay)
+        ax.axis('off')
+        fig.savefig(overlay_path, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+
+        metadata = {
+            "image": os.path.basename(self.imageFileName),
+            "image_path": self.imageFileName,
+            "mask": os.path.basename(mask_path),
+            "overlay": os.path.basename(overlay_path),
+            "shape": list(self.manualMask.shape),
+            "label": "trajectory",
+            "polygons": merged_polygons
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        print(f"[PyTPS] 已保存Mask: {mask_path}")
+
+    def loadManualMask(self):
+        start_dir = os.path.join(self.savePath, "masks") if self.savePath else "."
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "读取Mask",
+            start_dir,
+            "Mask files (*.png *.tif *.tiff *.jpg *.json);;All files (*.*)"
+        )
+        if not path:
+            return
+
+        mask_path = path
+        loaded_polygons = []
+        if path.lower().endswith(".json"):
+            import json
+            with open(path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            mask_name = metadata.get("mask")
+            loaded_polygons = metadata.get("polygons", [])
+            if not mask_name:
+                QtWidgets.QMessageBox.warning(self, "读取Mask", "JSON中没有mask字段。")
+                return
+            mask_path = os.path.join(os.path.dirname(path), mask_name)
+
+        from imageio.v3 import imread
+        mask_img = imread(mask_path)
+        if mask_img.ndim == 3:
+            mask_img = mask_img[..., 0]
+        mask = mask_img > 0
+
+        if self.imageData is None or len(self.imageData) == 0:
+            QtWidgets.QMessageBox.warning(self, "读取Mask", "请先加载一张图像。")
+            return
+        if mask.shape != self.imageData.shape:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "读取Mask",
+                f"Mask尺寸{mask.shape}与当前图像尺寸{self.imageData.shape}不一致。"
+            )
+            return
+
+        self.manualMask = mask
+        self.showManualMaskOverlay = True
+        self.manualMaskPoints = []
+        self.manualMaskPolygons = loaded_polygons
+        TDraw.DrawImage(self)
+        if self.isShowParabola:
+            TDraw.DrawParabola(self)
+        TDraw.DrawOrigin(self)
+        print(f"[PyTPS] 已读取Mask: {mask_path}")
 
     def help(self):
         title = "帮助"
@@ -526,7 +961,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 创建垂直布局
         self.verticalLayout_filter = QtWidgets.QVBoxLayout(self.groupBox_filter)
 
-        # 滤波模式选择（简化：只有两种模式）
+        # 滤波模式选择
         self.horizontalLayout_filterMode = QtWidgets.QHBoxLayout()
         self.label_filterMode = QtWidgets.QLabel(self.groupBox_filter)
         self.label_filterMode.setText("滤波模式：")
@@ -536,7 +971,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.filterMode == "none":
             self.comboBox_filterMode.setCurrentIndex(0)
         else:
-            # 所有其他模式统一为"形态学分割"
             self.comboBox_filterMode.setCurrentIndex(1)
             self.filterMode = "protected"  # 统一设置为protected
         self.horizontalLayout_filterMode.addWidget(self.label_filterMode)
@@ -550,6 +984,89 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pushButton_trajectoryBgSubtract.setText("多轨迹软掩膜滤波")
         self.pushButton_trajectoryBgSubtract.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
         self.verticalLayout_filter.addWidget(self.pushButton_trajectoryBgSubtract)
+
+        self.horizontalLayout_manualMask = QtWidgets.QHBoxLayout()
+        self.pushButton_startMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_startMask.setText("开始画Mask")
+        self.pushButton_finishMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_finishMask.setText("闭合当前")
+        self.pushButton_applyMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_applyMask.setText("应用Mask")
+        self.pushButton_saveMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_saveMask.setText("保存Mask")
+        self.pushButton_loadMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_loadMask.setText("读取Mask")
+        self.pushButton_clearMask = QtWidgets.QPushButton(self.groupBox_filter)
+        self.pushButton_clearMask.setText("清除Mask")
+        self.horizontalLayout_manualMask.addWidget(self.pushButton_startMask)
+        self.horizontalLayout_manualMask.addWidget(self.pushButton_finishMask)
+        self.horizontalLayout_manualMask.addWidget(self.pushButton_applyMask)
+        self.horizontalLayout_manualMask2 = QtWidgets.QHBoxLayout()
+        self.horizontalLayout_manualMask2.addWidget(self.pushButton_saveMask)
+        self.horizontalLayout_manualMask2.addWidget(self.pushButton_loadMask)
+        self.horizontalLayout_manualMask2.addWidget(self.pushButton_clearMask)
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_manualMask)
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_manualMask2)
+
+        self.horizontalLayout_maskParams = QtWidgets.QHBoxLayout()
+        self.label_maskBgSigma = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_maskBgSigma.setText("Mask背景半径：")
+        self.lineEdit_maskBgSigma = QtWidgets.QLineEdit(self.groupBox_filter)
+        self.lineEdit_maskBgSigma.setText(str(self.maskBgSigma))
+        self.lineEdit_maskBgSigma.setValidator(QtGui.QDoubleValidator(0.0, 50.0, 2))
+        self.lineEdit_maskBgSigma.setMaximumWidth(55)
+        self.label_maskBgPercentile = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_maskBgPercentile.setText("背景分位：")
+        self.lineEdit_maskBgPercentile = QtWidgets.QLineEdit(self.groupBox_filter)
+        self.lineEdit_maskBgPercentile.setText(str(self.maskBgPercentile))
+        self.lineEdit_maskBgPercentile.setValidator(QtGui.QDoubleValidator(0.0, 100.0, 2))
+        self.lineEdit_maskBgPercentile.setMaximumWidth(55)
+        self.horizontalLayout_maskParams.addWidget(self.label_maskBgSigma)
+        self.horizontalLayout_maskParams.addWidget(self.lineEdit_maskBgSigma)
+        self.horizontalLayout_maskParams.addWidget(self.label_maskBgPercentile)
+        self.horizontalLayout_maskParams.addWidget(self.lineEdit_maskBgPercentile)
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_maskParams)
+
+        self.horizontalLayout_bgMode = QtWidgets.QHBoxLayout()
+        self.label_bgMode = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_bgMode.setText("能谱背景：")
+        self.comboBox_bgMode = QtWidgets.QComboBox(self.groupBox_filter)
+        self.comboBox_bgMode.addItems(["同形偏移", "上下旁带"])
+        self.comboBox_bgMode.setCurrentIndex(0 if self.backgroundMode == "offset" else 1)
+        self.horizontalLayout_bgMode.addWidget(self.label_bgMode)
+        self.horizontalLayout_bgMode.addWidget(self.comboBox_bgMode)
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_bgMode)
+
+        self.horizontalLayout_bgParams = QtWidgets.QHBoxLayout()
+        self.label_bgOffset = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_bgOffset.setText("偏移(px)：")
+        self.lineEdit_bgOffset = QtWidgets.QLineEdit(self.groupBox_filter)
+        self.lineEdit_bgOffset.setText(str(self.backgroundOffset))
+        self.lineEdit_bgOffset.setValidator(QtGui.QDoubleValidator(-200.0, 200.0, 2))
+        self.lineEdit_bgOffset.setMaximumWidth(60)
+        self.label_bgWidth = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_bgWidth.setText("宽度(px)：")
+        self.lineEdit_bgWidth = QtWidgets.QLineEdit(self.groupBox_filter)
+        self.lineEdit_bgWidth.setText(str(self.backgroundWidth))
+        self.lineEdit_bgWidth.setValidator(QtGui.QDoubleValidator(1.0, 100.0, 2))
+        self.lineEdit_bgWidth.setMaximumWidth(60)
+        self.horizontalLayout_bgParams.addWidget(self.label_bgOffset)
+        self.horizontalLayout_bgParams.addWidget(self.lineEdit_bgOffset)
+        self.horizontalLayout_bgParams.addWidget(self.label_bgWidth)
+        self.horizontalLayout_bgParams.addWidget(self.lineEdit_bgWidth)
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_bgParams)
+
+        self.horizontalLayout_smooth = QtWidgets.QHBoxLayout()
+        self.label_smoothWindow = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_smoothWindow.setText("能谱平滑窗口：")
+        self.lineEdit_smoothWindow = QtWidgets.QLineEdit(self.groupBox_filter)
+        self.lineEdit_smoothWindow.setText(str(self.spectrumSmoothWindow))
+        self.lineEdit_smoothWindow.setValidator(QtGui.QIntValidator(3, 201))
+        self.lineEdit_smoothWindow.setMaximumWidth(60)
+        self.horizontalLayout_smooth.addWidget(self.label_smoothWindow)
+        self.horizontalLayout_smooth.addWidget(self.lineEdit_smoothWindow)
+        self.horizontalLayout_smooth.addStretch()
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_smooth)
 
         # 轨迹保护宽度（新增）
         self.horizontalLayout_protectionWidth = QtWidgets.QHBoxLayout()
@@ -585,19 +1102,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.horizontalLayout_fadeRadius.addStretch()
         self.verticalLayout_filter.addLayout(self.horizontalLayout_fadeRadius)
 
-        # 说明文字（更新）
-        self.label_hint = QtWidgets.QLabel(self.groupBox_filter)
-        self.label_hint.setText("总影响范围计算：\n·轨迹保护宽度N：从中心线向上下各N像素（总宽度=2N+1）\n·羽化半径R：从保护边缘往外再过渡R像素\n·总影响范围 = 2N+1 + 2R 像素\n·例：保护宽度5 + 羽化半径20 = 轨迹宽11px + 上下各20px羽化 = 总共51px")
-        self.label_hint.setStyleSheet("color: #0066cc; font-size: 9pt; padding: 5px; border-left: 3px solid #0066cc; background-color: #f0f8ff;")
-        self.label_hint.setWordWrap(True)
-        self.verticalLayout_filter.addWidget(self.label_hint)
-
         # 将滤波GroupBox添加到主布局
         self.ui.verticalLayout_3.addWidget(self.groupBox_filter)
 
         # 绑定信号
         self.comboBox_filterMode.currentIndexChanged.connect(self.setFilterMode)
         self.pushButton_trajectoryBgSubtract.clicked.connect(self.trajectoryBackgroundSubtraction)
+        self.pushButton_startMask.clicked.connect(self.startManualMask)
+        self.pushButton_finishMask.clicked.connect(self.finishManualMaskPolygon)
+        self.pushButton_applyMask.clicked.connect(self.applyManualMask)
+        self.pushButton_saveMask.clicked.connect(self.saveManualMask)
+        self.pushButton_loadMask.clicked.connect(self.loadManualMask)
+        self.pushButton_clearMask.clicked.connect(self.clearManualMask)
+        self.lineEdit_maskBgSigma.editingFinished.connect(self.setMaskBgSigma)
+        self.lineEdit_maskBgPercentile.editingFinished.connect(self.setMaskBgPercentile)
+        self.comboBox_bgMode.currentIndexChanged.connect(self.setBackgroundMode)
+        self.lineEdit_bgOffset.editingFinished.connect(self.setBackgroundOffset)
+        self.lineEdit_bgWidth.editingFinished.connect(self.setBackgroundWidth)
+        self.lineEdit_smoothWindow.editingFinished.connect(self.setSpectrumSmoothWindow)
         self.lineEdit_protectionWidth.editingFinished.connect(self.setProtectionWidth)
         self.lineEdit_fadeRadius.editingFinished.connect(self.setFadeRadius)
 
@@ -672,21 +1194,10 @@ class MainWindow(QtWidgets.QMainWindow):
             rolling_ball_radius=40  # 保留参数兼容性，但不使用
         )
 
-        # 更新显示并重新计算能谱
-        self.imageData = np.flipud(img_cleaned)
-        self.zoomPic = self.imageData
-
-        # 重新解谱
-        import SolveSpectrum, TPSParabola
-        self.specData, self.noiseSpec = SolveSpectrum.SolveSpectrum(
-            self.imageData, self.X0, self.Y0, self.A, self.Z,
-            self.Emin, self.Emax, self.dY, self.MCPPath, self.TPS,
-            self.is8bitImage
-        )
-        self.TPSParabola = TPSParabola.Parabola(
-            self.TPS, self.specData[0], self.X0, self.Y0,
-            self.A, self.Z, self.imageData.shape[1]
-        )
+        # 只更新显示图。定量能谱继续使用TSolve生成的analysisImage。
+        self.displayImage = np.flipud(img_cleaned)
+        self.imageData = self.displayImage
+        self.zoomPic = self.displayImage
 
         TDraw.DrawImage(self)
         TDraw.DrawSpec(self)
@@ -694,7 +1205,7 @@ class MainWindow(QtWidgets.QMainWindow):
             TDraw.DrawParabola(self)
         TDraw.DrawOrigin(self)
 
-        print(f"[PyTPS] 多轨迹软掩膜滤波完成，已更新能谱")
+        print(f"[PyTPS] 多轨迹软掩膜滤波完成，仅更新显示图，未改变能谱")
 
     def setFilterMode(self, index):
         """设置滤波模式（简化版）"""

@@ -45,6 +45,7 @@ def applyFilter(img, filterMode, params):
         - "morphological": 形态学去噪（推荐！保留信号最好）
         - "rolling_ball": 滚球法背景减除 + 中值滤波
         - "protected": 轨迹保护滤波（需要TPS参数）
+        - "display_smooth": 显示平滑（只用于预览图）
         - "soft_mask": 多轨迹软掩膜滤波（新！所有粒子+原点，软边界羽化）
     params : dict
         滤波参数字典：
@@ -91,6 +92,9 @@ def applyFilter(img, filterMode, params):
 
         print(f"[TFilter] 形态学分割模式，阈值={thresholdValue}, kernel={morphKernelSize}")
         return protectedFilter(img, thresholdValue, morphKernelSize, showMask)
+    elif filterMode == "display_smooth":
+        print("[TFilter] 显示平滑模式")
+        return makeDisplayImage(img, makeAnalysisImage(img, params), params)
     elif filterMode == "soft_mask":
         # 多轨迹软掩膜滤波（需要TPS参数）
         X0 = params.get('X0')
@@ -106,8 +110,14 @@ def applyFilter(img, filterMode, params):
             print(f"[TFilter] 错误：soft_mask模式需要TPS参数，返回原图")
             return noFilter(img)
 
-        print(f"[TFilter] 多轨迹软掩膜模式，羽化半径={fadeRadius}, 滚球半径={rollingBallRadius}")
-        return softMaskMultiTrajectory(img, X0, Y0, Emin, Emax, dY, TPS, fadeRadius, rollingBallRadius)
+        protectionWidth = params.get('protectionWidth', int(dY * 3))
+        print(f"[TFilter] 多轨迹软掩膜模式，保护宽度={protectionWidth}, 羽化半径={fadeRadius}, 滚球半径={rollingBallRadius}")
+        return softMaskMultiTrajectory(
+            img, X0, Y0, Emin, Emax, dY, TPS,
+            protection_width=protectionWidth,
+            fade_radius=fadeRadius,
+            rolling_ball_radius=rollingBallRadius
+        )
     else:
         # 未知模式，返回原图
         print(f"[TFilter] 警告：未知滤波模式 '{filterMode}'，返回原图")
@@ -129,6 +139,113 @@ def noFilter(img):
         原图
     """
     return img
+
+
+def makeAnalysisImage(img, params=None):
+    """
+    Build the image used for quantitative spectrum extraction.
+
+    This path intentionally stays conservative: it removes isolated hot pixels
+    with a small median filter, but avoids large-scale background flattening.
+    Local background subtraction is handled later in SolveSpectrumSideband().
+    """
+    if params is None:
+        params = {}
+
+    mode = params.get('analysisPreprocess', 'hot_pixel')
+    if mode in ('none', None):
+        return img.copy()
+
+    hot_pixel_size = int(params.get('hotPixelMedianSize', 3))
+    if hot_pixel_size < 1:
+        return img.copy()
+    if hot_pixel_size % 2 == 0:
+        hot_pixel_size += 1
+
+    img_float = img.astype(np.float64)
+    analysis = median_filter(img_float, size=hot_pixel_size)
+
+    if img.dtype == np.uint16:
+        return np.clip(analysis, 0, 65535).astype(np.uint16)
+    return analysis.astype(img.dtype, copy=False)
+
+
+def makeDisplayImage(img, analysis_img=None, params=None):
+    """
+    Build the image used only for display/export.
+
+    Trajectory regions are protected with the TPS model. Outside the protected
+    region, high-frequency clutter is blended into a smooth background.
+    """
+    if params is None:
+        params = {}
+
+    img_float = img.astype(np.float64)
+    base = analysis_img.astype(np.float64) if analysis_img is not None else img_float
+
+    bg_sigma = float(params.get('displayBgSigma', 4))
+    bg_median_size = int(params.get('displayMedianSize', 5))
+    if bg_median_size % 2 == 0:
+        bg_median_size += 1
+
+    # Robust background display: suppress isolated bright speckles without
+    # carving model-shaped grooves around trajectories.
+    background = median_filter(img_float, size=bg_median_size)
+    background = gaussian_filter(background, sigma=bg_sigma)
+
+    positive = base[base > 0]
+    if positive.size:
+        core_threshold = np.percentile(positive, params.get('displayCorePercentile', 99.2))
+    else:
+        core_threshold = np.percentile(img_float, 99.2)
+    core_mask = base >= core_threshold
+    core_mask = binary_dilation(core_mask, iterations=int(params.get('displayCoreDilation', 1)))
+
+    display_alpha = float(params.get('displayBgAlpha', 0.9))
+    display = display_alpha * background + (1 - display_alpha) * img_float
+    display[core_mask] = img_float[core_mask]
+
+    if img.dtype == np.uint16:
+        return np.clip(display, 0, 65535).astype(np.uint16)
+    return display.astype(img.dtype, copy=False)
+
+
+def applyManualMaskDisplay(img, mask, bg_sigma=3, bg_median_size=7, bg_percentile=35):
+    """
+    Keep manually selected trajectory pixels and replace the rest with a smooth
+    display background. This is a visual extraction tool only.
+    """
+    if mask is None:
+        return img.copy()
+
+    img_float = img.astype(np.float64)
+    mask = mask.astype(bool)
+    if mask.shape != img.shape:
+        return img.copy()
+
+    if bg_median_size % 2 == 0:
+        bg_median_size += 1
+
+    bg_source = img_float.copy()
+    outside = ~mask
+    outside_values = img_float[outside]
+    if outside_values.size:
+        bg_level = np.percentile(outside_values, bg_percentile)
+    else:
+        bg_level = np.percentile(img_float, bg_percentile)
+
+    # Suppress meteor-like speckles outside the user-approved trajectory mask
+    # before smoothing, otherwise bright speckles smear into the background.
+    bg_source[outside] = np.minimum(bg_source[outside], bg_level)
+
+    background = median_filter(bg_source, size=bg_median_size)
+    background = gaussian_filter(background, sigma=bg_sigma)
+    display = background
+    display[mask] = img_float[mask]
+
+    if img.dtype == np.uint16:
+        return np.clip(display, 0, 65535).astype(np.uint16)
+    return display.astype(img.dtype, copy=False)
 
 
 def medianFilter(img, size=5, iterations=1):
@@ -569,7 +686,9 @@ def generateMultiTrajectoryMask(img_shape, X0, Y0, Emin, Emax, dY, TPS, protecti
 
     for A, Z, name in particle_list:
         # 生成单条轨迹掩膜
-        mask_single = generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protectionWidth)
+        mask_single = generateTrajectoryMask(
+            img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protectionWidth, verbose=False
+        )
 
         # 合并到联合掩膜
         n_pixels_added = np.sum(mask_single & ~mask_combined)
@@ -584,7 +703,7 @@ def generateMultiTrajectoryMask(img_shape, X0, Y0, Emin, Emax, dY, TPS, protecti
     return mask_combined
 
 
-def generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protectionWidth):
+def generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protectionWidth, verbose=True):
     """
     生成TPS抛物线轨迹掩膜
 
@@ -622,11 +741,12 @@ def generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protect
     # 假设2：Y0本来就是原始坐标，不需要转换
     Y0_no_flip_assumption = Y0
 
-    print(f"[TFilter] 生成轨迹掩膜调试:")
-    print(f"[TFilter]   输入参数: X0={X0}, Y0={Y0}, 图像={img_shape}")
-    print(f"[TFilter]   假设1(需翻转): Y0_before={Y0_flip_assumption}")
-    print(f"[TFilter]   假设2(不翻转): Y0_before={Y0_no_flip_assumption}")
-    print(f"[TFilter]   保护宽度={protectionWidth}px (dY={dY})")
+    if verbose:
+        print(f"[TFilter] 生成轨迹掩膜调试:")
+        print(f"[TFilter]   输入参数: X0={X0}, Y0={Y0}, 图像={img_shape}")
+        print(f"[TFilter]   假设1(需翻转): Y0_before={Y0_flip_assumption}")
+        print(f"[TFilter]   假设2(不翻转): Y0_before={Y0_no_flip_assumption}")
+        print(f"[TFilter]   保护宽度={protectionWidth}px (dY={dY})")
 
     # **使用假设1：Y0是翻转后的物理坐标，需要转换为原始图像坐标**
     Y0_before_flip = Y0_flip_assumption
@@ -652,7 +772,8 @@ def generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protect
     Xmin = max(Xmin, 0)
 
     if Xmin >= Xmax:
-        print(f"[TFilter] 警告：X范围无效 (Xmin={Xmin}, Xmax={Xmax})，返回空掩膜")
+        if verbose:
+            print(f"[TFilter] 警告：X范围无效 (Xmin={Xmin}, Xmax={Xmax})，返回空掩膜")
         return mask
 
     X = np.arange(Xmin, Xmax + 1, dtype=int)
@@ -684,13 +805,14 @@ def generateTrajectoryMask(img_shape, X0, Y0, A, Z, Emin, Emax, dY, TPS, protect
                 y_positions.append((x, y_min, y_max, Y_center[i]))
 
     protection_ratio = 100.0 * count / (height * width)
-    print(f"[TFilter] 轨迹掩膜生成完成: 保护区域={count}像素 ({protection_ratio:.2f}%)")
-    print(f"[TFilter]   Y范围示例（翻转前坐标）:")
-    for x, ymin, ymax, ycenter in y_positions:
-        print(f"[TFilter]     X={x}: Y_center={ycenter:.1f}, Y保护范围=[{ymin}, {ymax}]")
+    if verbose:
+        print(f"[TFilter] 轨迹掩膜生成完成: 保护区域={count}像素 ({protection_ratio:.2f}%)")
+        print(f"[TFilter]   Y范围示例（翻转前坐标）:")
+        for x, ymin, ymax, ycenter in y_positions:
+            print(f"[TFilter]     X={x}: Y_center={ycenter:.1f}, Y保护范围=[{ymin}, {ymax}]")
 
     # 计算翻转后的Y坐标（仅用于调试显示）
-    if len(y_positions) > 0:
+    if verbose and len(y_positions) > 0:
         print(f"[TFilter]   对应翻转后坐标（物理坐标）:")
         for x, ymin, ymax, ycenter in y_positions:
             ymin_after = height - 1 - ymax

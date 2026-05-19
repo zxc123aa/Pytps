@@ -6,9 +6,8 @@ import os
 def Solve(app):
     if os.path.isfile(app.imageFileName) and app.isAnalysing == False:
         app.zoomed = False
-        img, app.is8bitImage = TImageRead.readImage(app.imageFileName)
+        raw_img, app.is8bitImage = TImageRead.readImage(app.imageFileName)
 
-        # 应用滤波（新增）
         filterParams = {
             'medianSize': app.medianSize,
             'medianIterations': app.medianIterations,
@@ -32,24 +31,47 @@ def Solve(app):
             'aggressiveSize': app.aggressiveSize if hasattr(app, 'aggressiveSize') else 15,
             'gentleSize': app.gentleSize if hasattr(app, 'gentleSize') else 5,
         }
-        print(f"[TSolve] 应用滤波: mode={app.filterMode}, params={filterParams}")
-        img = TFilter.applyFilter(img, app.filterMode, filterParams)
-        print(f"[TSolve] 滤波完成，图像形状: {img.shape}, 数据类型: {img.dtype}")
 
-        app.imageData = np.flipud(img)
-        app.zoomPic = app.imageData
-        app.specData, app.noiseSpec = SolveSpectrum.SolveSpectrum(app.imageData, app.X0, app.Y0, app.A, app.Z, app.Emin,
-                                                                  app.Emax, app.dY, app.MCPPath, app.TPS,
-                                                                  app.is8bitImage)
+        app.rawImage = np.flipud(raw_img)
+        analysis_img = TFilter.makeAnalysisImage(raw_img, filterParams)
+        display_img = TFilter.applyFilter(raw_img, app.filterMode, filterParams)
+        app.analysisImage = np.flipud(analysis_img)
+        app.displayImage = np.flipud(display_img)
+        app.baseDisplayImage = app.displayImage.copy()
+
+        # Backward-compatible display image. Quantitative extraction uses analysisImage.
+        app.imageData = app.displayImage
+        app.zoomPic = app.displayImage
+
+        print(f"[TSolve] 图像分流完成: raw={raw_img.shape}, analysis={analysis_img.shape}, display={display_img.shape}")
+        app.specDataRaw, app.noiseSpec, app.spectrumStats = SolveSpectrum.SolveSpectrumSideband(
+            app.analysisImage, app.X0, app.Y0, app.A, app.Z, app.Emin,
+            app.Emax, app.dY, app.MCPPath, app.TPS, app.is8bitImage,
+            background_mode=getattr(app, 'backgroundMode', 'sideband'),
+            background_offset=getattr(app, 'backgroundOffset', None),
+            background_width=getattr(app, 'backgroundWidth', None),
+            return_stats=True
+        )
+        app.specDataNet = app.spectrumStats["net_spectrum"]
+        app.specData = SolveSpectrum.SmoothSpectrumDisplayRaw(
+            app.specDataNet,
+            smooth_window=getattr(app, 'spectrumSmoothWindow', 9)
+        )
         app.TPSParabola = TPSParabola.Parabola(app.TPS, app.specData[0], app.X0, app.Y0, app.A, app.Z,
                                                app.imageData.shape[1])
-        # app.cutoffEnergy = AutoCutoffEnergy.CutoffEnergy(app.specData, app.noiseSpec, app.Emin, app.Emax,
-        #                                                  app.specWindow)
-        # app.specCursor = AutoCutoffEnergy.CutoffEnergy(app.specData, app.noiseSpec, app.Emin, app.Emax, app.specWindow)
-        app.cutoffEnergy = 0
-        app.specCursor = 0
-        # app.imageCursor = TPSParabola.CutoffLine(app.TPS, app.specCursor, app.X0, app.A, app.Z)
-        app.imageCursor = 0
+        app.backgroundParabola = TPSParabola.OffsetParabola(
+            app.TPS, app.specData[0], app.X0, app.Y0, app.A, app.Z,
+            app.imageData.shape[1], getattr(app, 'backgroundOffset', -18)
+        )
+        app.cutoffEnergy = SolveSpectrum.CutoffEnergySNR(
+            app.specData, app.noiseSpec, app.Emin, app.Emax,
+            snr_threshold=getattr(app, 'cutoffSnrThreshold', 3.0),
+            consecutive=getattr(app, 'cutoffConsecutiveBins', 3),
+            smooth_window=getattr(app, 'spectrumSmoothWindow', 9)
+        )
+        if not getattr(app, 'isManualCursor', False):
+            app.specCursor = app.cutoffEnergy if not isinstance(app.cutoffEnergy, str) else 0
+            app.imageCursor = TPSParabola.CutoffLine(app.TPS, app.specCursor, app.X0, app.A, app.Z)
         TDraw.DrawImage(app)
         TDraw.DrawSpec(app)
 
@@ -72,9 +94,8 @@ def Solve(app):
             TDraw.DrawAnalysingSpec(app)
         else:
             for image in app.analysingFileList:
-                img, app.is8bitImage = TImageRead.readImage(image)
+                raw_img, app.is8bitImage = TImageRead.readImage(image)
 
-                # 应用滤波（新增）
                 filterParams = {
                     'medianSize': app.medianSize,
                     'medianIterations': app.medianIterations,
@@ -98,13 +119,27 @@ def Solve(app):
                     'aggressiveSize': app.aggressiveSize if hasattr(app, 'aggressiveSize') else 15,
                     'gentleSize': app.gentleSize if hasattr(app, 'gentleSize') else 5,
                 }
-                img = TFilter.applyFilter(img, app.filterMode, filterParams)
-
-                data = np.flipud(img)
-                spec, noise = SolveSpectrum.SolveSpectrum(data, app.X0, app.Y0, app.A, app.Z, app.Emin, app.Emax,
-                                                          app.dY, app.MCPPath, app.TPS, app.is8bitImage)
+                analysis_img = TFilter.makeAnalysisImage(raw_img, filterParams)
+                data = np.flipud(analysis_img)
+                spec_raw, noise, stats = SolveSpectrum.SolveSpectrumSideband(
+                    data, app.X0, app.Y0, app.A, app.Z, app.Emin, app.Emax,
+                    app.dY, app.MCPPath, app.TPS, app.is8bitImage,
+                    background_mode=getattr(app, 'backgroundMode', 'sideband'),
+                    background_offset=getattr(app, 'backgroundOffset', None),
+                    background_width=getattr(app, 'backgroundWidth', None),
+                    return_stats=True
+                )
+                spec = SolveSpectrum.SmoothSpectrumDisplayRaw(
+                    stats["net_spectrum"],
+                    smooth_window=getattr(app, 'spectrumSmoothWindow', 9)
+                )
                 app.analysingDataList.append(spec)
                 app.cutoffEnergyList.append(
-                    AutoCutoffEnergy.CutoffEnergy(spec, noise, app.Emin, app.Emax, app.specWindow))
+                    SolveSpectrum.CutoffEnergySNR(
+                        spec, noise, app.Emin, app.Emax,
+                        snr_threshold=getattr(app, 'cutoffSnrThreshold', 3.0),
+                        consecutive=getattr(app, 'cutoffConsecutiveBins', 3),
+                        smooth_window=getattr(app, 'spectrumSmoothWindow', 9)
+                    ))
             app.specCursor = 0.0
             TDraw.DrawAnalysingSpec(app)

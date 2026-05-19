@@ -3,16 +3,36 @@ import numpy as np
 import os
 
 
+def _spectrum_particle_label(app):
+    try:
+        if int(getattr(app, "A", 0)) == 1 and int(getattr(app, "Z", 0)) == 1:
+            return "protons"
+    except (TypeError, ValueError):
+        pass
+    return "ions"
+
+
+def _set_spectrum_axes(app):
+    particle = _spectrum_particle_label(app)
+    app.ax_spec.set_xlabel("Energy (MeV)", fontsize=14, labelpad=6)
+    app.ax_spec.set_ylabel(
+        rf"$d^2N/(dE\,d\Omega)$ ({particle} MeV$^{{-1}}$ sr$^{{-1}}$)",
+        fontsize=14,
+        labelpad=8
+    )
+    app.ax_spec.minorticks_on()
+    app.ax_spec.tick_params(direction="in", which="both", top=True, right=True, labelsize=12)
+
+
+def _finish_spectrum_layout(app):
+    app.ax_spec.legend(frameon=False, fontsize=10)
+    app.specFig.subplots_adjust(left=0.20, bottom=0.18, right=0.97, top=0.96)
+
+
 def DrawImage(app):
     if os.path.isfile(app.imageFileName):
         app.imageFig.clf()
-        # 修复：使用已经滤波过的imageData，而不是重新读取文件
-        # 原代码会绕过滤波，直接显示原始图片！
-        # pic, app.is8bitImage = TImageRead.readImage(app.imageFileName)
-        # pic = np.flipud(pic)
-
-        # 正确做法：使用TSolve.py中已经滤波并翻转的imageData
-        pic = app.imageData
+        pic = getattr(app, "displayImage", app.imageData)
 
         app.ax_image = app.imageFig.subplots()
         if app.zoomed == False:
@@ -29,8 +49,15 @@ def DrawImage(app):
             else:
                 app.ax_image.axvline(app.zoomImageCursor, linewidth=1, color='black')
 
+        if hasattr(app, "drawManualMaskOverlay"):
+            app.drawManualMaskOverlay()
+
+        view = app.zoomPic if app.zoomed else pic
+        app.ax_image.set_xlim(-0.5, view.shape[1] - 0.5)
+        app.ax_image.set_ylim(view.shape[0] - 0.5, -0.5)
+
         app.imageCanvas.draw()
-        print(f"[TDraw] 绘制图像完成，使用滤波后的imageData，形状: {pic.shape}")
+        print(f"[TDraw] 绘制图像完成，使用displayImage，形状: {pic.shape}")
 
 
 def DrawSpec(app):
@@ -39,17 +66,26 @@ def DrawSpec(app):
         app.ax_spec = app.specFig.subplots()
         app.ax_spec.set_xlim(app.specEmin, app.specEmax)
         app.ax_spec.set_ylim(app.specdNdEmin, app.specdNdEmax)
-        app.ax_spec.set_xlabel("E(MeV)")
-        app.ax_spec.set_ylabel("dNdE")
-        app.ax_spec.semilogy(app.specData[0], app.specData[1])
-        app.ax_spec.semilogy(app.noiseSpec[0], app.noiseSpec[1])
+        _set_spectrum_axes(app)
+        if hasattr(app, "specDataRaw"):
+            app.ax_spec.semilogy(app.specDataRaw[0], app.specDataRaw[1], alpha=0.45, linewidth=1.0,
+                                 label="Raw center-band")
+        if hasattr(app, "noiseSpec"):
+            app.ax_spec.semilogy(app.noiseSpec[0], app.noiseSpec[1], alpha=0.55, linewidth=1.0,
+                                 linestyle='--', label="Raw background")
+        if hasattr(app, "specDataNet"):
+            app.ax_spec.semilogy(app.specDataNet[0], app.specDataNet[1], alpha=0.65, linewidth=1.1,
+                                 label="Background-subtracted")
+        app.ax_spec.semilogy(app.specData[0], app.specData[1], linewidth=2.0,
+                             label="Smoothed background-subtracted")
+        _finish_spectrum_layout(app)
         # app.ax_spec.plot(app.specData[0], app.specData[1])
         # app.ax_spec.plot(app.noiseSpec[0], app.noiseSpec[1])
 
         if isinstance(app.specCursor, str):
             pass
         else:
-            app.ax_spec.axvline(app.specCursor, linewidth=1, color='black')
+            app.ax_spec.axvline(app.specCursor, linewidth=1.2, color='black')
             app.ui.lineEdit_cursor.setText(str(np.round(app.specCursor, 2)))
             # app.pv.put(np.round(app.specCursor,2))
         app.specCanvas.draw()
@@ -58,8 +94,14 @@ def DrawSpec(app):
 def DrawParabola(app):
     if app.zoomed == False:
         app.ax_image.plot(app.TPSParabola[0], app.TPSParabola[1], alpha=0.5, linewidth=2, color='red')
+        if getattr(app, 'backgroundMode', None) == "offset" and hasattr(app, 'backgroundParabola'):
+            app.ax_image.plot(app.backgroundParabola[0], app.backgroundParabola[1], alpha=0.7,
+                              linewidth=1.5, color='lime', linestyle='--')
     else:
         app.ax_image.plot(app.zoomPara[0], app.zoomPara[1], alpha=0.5, linewidth=2, color='red')
+        if getattr(app, 'backgroundMode', None) == "offset" and hasattr(app, 'zoomBackgroundPara'):
+            app.ax_image.plot(app.zoomBackgroundPara[0], app.zoomBackgroundPara[1], alpha=0.7,
+                              linewidth=1.5, color='lime', linestyle='--')
     app.imageCanvas.draw()
 
 
@@ -79,8 +121,7 @@ def DrawAnalysingSpec(app):
     app.ax_spec = app.specFig.subplots()
     app.ax_spec.set_xlim(app.specEmin, app.specEmax)
     app.ax_spec.set_ylim(app.specdNdEmin, app.specdNdEmax)
-    app.ax_spec.set_xlabel("E(MeV)")
-    app.ax_spec.set_ylabel("dNdE")
+    _set_spectrum_axes(app)
     if app.analysingDataList == []:
         pass
     else:
@@ -92,7 +133,7 @@ def DrawAnalysingSpec(app):
                 app.ax_spec.semilogy(app.analysingDataList[i][0], app.analysingDataList[i][1], label=str(
                     os.path.splitext(os.path.basename(app.analysingFileList[i]))[0]) + '--' + str(
                     app.cutoffEnergyList[i]) + 'MeV')
-        app.ax_spec.legend()
-        app.ax_spec.axvline(app.specCursor, linewidth=1, color='black')
+        _finish_spectrum_layout(app)
+        app.ax_spec.axvline(app.specCursor, linewidth=1.2, color='black')
         app.ui.lineEdit_cursor.setText(str(np.round(app.specCursor, 2)))
     app.specCanvas.draw()

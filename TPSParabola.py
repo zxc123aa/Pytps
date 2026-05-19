@@ -19,6 +19,12 @@ def Parabola(TPS, E, X0, Y0, A, Z, boundary):
     return line
 
 
+def OffsetParabola(TPS, E, X0, Y0, A, Z, boundary, offset):
+    line = Parabola(TPS, E, X0, Y0, A, Z, boundary)
+    line[1] = line[1] + offset
+    return line
+
+
 def ZoomPara(line, area, newBoundary):
     xmax_index = np.where(line[0] >= area[3])
     tempxmax = np.array([np.delete(line[0], xmax_index), np.delete(line[1], xmax_index)])

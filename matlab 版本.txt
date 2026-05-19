@@ -1,0 +1,357 @@
+%% ========================================================================
+%% 完整的16位TIFF图像处理：Rolling Ball + 去噪 + 自定义Jet伪彩色
+%% ========================================================================
+clear; clc; close all;
+
+%% 参数设置
+filename = 'your_image.tif';  % 修改为您的文件名
+ball_radius = 50;              % Rolling Ball半径，根据背景特征调整
+median_size = [5 5];           % 中值滤波窗口大小
+white_ratio = 0.05;            % colormap中白色占比（最低5%）
+transition_ratio = 0.10;       % 白色到jet的过渡区域占比
+
+%% 读取16位TIFF图像
+fprintf('正在读取图像...\n');
+img = imread(filename);
+info = imfinfo(filename);
+fprintf('图像信息: %d x %d, %d位\n', info.Width, info.Height, info.BitDepth);
+
+img = double(img);
+[rows, cols] = size(img);
+
+%% ========================================================================
+%% 第一步：Rolling Ball 背景减除
+%% ========================================================================
+fprintf('正在进行Rolling Ball背景减除 (半径=%d)...\n', ball_radius);
+
+% 计算背景
+background = rolling_ball_background(img, ball_radius);
+
+% 减除背景
+img_bg_removed = img - background;
+img_bg_removed(img_bg_removed < 0) = 0;
+
+%% ========================================================================
+%% 第二步：椒盐噪声去除
+%% ========================================================================
+fprintf('正在进行噪声去除...\n');
+
+% 方法1: 标准中值滤波
+img_median3 = medfilt2(img_bg_removed, [3 3]);
+img_median5 = medfilt2(img_bg_removed, [5 5]);
+
+% 方法2: 自适应中值滤波
+img_adaptive = adaptive_median_filter(img_bg_removed, 7);
+
+% 方法3: 开关中值滤波
+img_switching = switching_median_filter(img_bg_removed, 3);
+
+% 方法4: 形态学滤波
+se = strel('disk', 2);
+img_morph = imclose(imopen(img_bg_removed, se), se);
+
+% 方法5: 双边滤波
+img_bilateral = imbilatfilt(img_bg_removed);
+
+% 方法6: 迭代中值滤波（"滚雪球"方式）
+img_iter = img_bg_removed;
+for i = 1:3
+    img_iter = medfilt2(img_iter, [3 3]);
+end
+
+%% ========================================================================
+%% 第三步：创建自定义Colormap（白色+Jet）
+%% ========================================================================
+custom_cmap = custom_jet_white_smooth(256, white_ratio, transition_ratio);
+
+%% ========================================================================
+%% 可视化：完整处理流程
+%% ========================================================================
+figure('Name', 'Rolling Ball + 去噪完整流程', 'Position', [50, 50, 1800, 1000]);
+
+% 1. 原始图像
+subplot(3,3,1);
+imshow(img, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('1. 原始图像', 'FontSize', 11, 'FontWeight', 'bold');
+
+% 2. Rolling Ball背景
+subplot(3,3,2);
+imshow(background, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('2. Rolling Ball背景', 'FontSize', 11, 'FontWeight', 'bold');
+
+% 3. 背景减除后
+subplot(3,3,3);
+imshow(img_bg_removed, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('3. 背景减除后', 'FontSize', 11, 'FontWeight', 'bold');
+
+% 4. 中值滤波 3×3
+subplot(3,3,4);
+imshow(img_median3, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('4. 中值滤波 3×3', 'FontSize', 11);
+
+% 5. 中值滤波 5×5 (推荐)
+subplot(3,3,5);
+imshow(img_median5, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('5. 中值滤波 5×5 ★推荐', 'FontSize', 11, 'FontWeight', 'bold');
+
+% 6. 自适应中值滤波
+subplot(3,3,6);
+imshow(img_adaptive, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('6. 自适应中值滤波', 'FontSize', 11);
+
+% 7. 形态学滤波
+subplot(3,3,7);
+imshow(img_morph, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('7. 形态学滤波', 'FontSize', 11);
+
+% 8. 双边滤波
+subplot(3,3,8);
+imshow(img_bilateral, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('8. 双边滤波', 'FontSize', 11);
+
+% 9. 迭代中值滤波
+subplot(3,3,9);
+imshow(img_iter, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('9. 迭代中值×3', 'FontSize', 11);
+
+%% ========================================================================
+%% 高质量对比图（原始 vs 最终结果）
+%% ========================================================================
+figure('Name', '处理前后对比', 'Position', [100, 100, 1400, 600]);
+
+% 原始图像
+subplot(1,3,1);
+imshow(img, []);
+colormap(gca, custom_cmap);
+c1 = colorbar;
+c1.Label.String = '强度值';
+title('原始图像', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('X (像素)');
+ylabel('Y (像素)');
+
+% Rolling Ball背景
+subplot(1,3,2);
+imshow(background, []);
+colormap(gca, custom_cmap);
+c2 = colorbar;
+c2.Label.String = '强度值';
+title(sprintf('Rolling Ball背景 (r=%d)', ball_radius), 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('X (像素)');
+ylabel('Y (像素)');
+
+% 最终结果
+subplot(1,3,3);
+imshow(img_median5, []);
+colormap(gca, custom_cmap);
+c3 = colorbar;
+c3.Label.String = '强度值';
+title('最终结果 (背景去除+去噪)', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('X (像素)');
+ylabel('Y (像素)');
+
+%% ========================================================================
+%% Rolling Ball 半径对比
+%% ========================================================================
+figure('Name', 'Rolling Ball 半径对比', 'Position', [100, 100, 1600, 800]);
+
+radii = [20, 50, 100, 150];
+for i = 1:4
+    % 计算背景
+    bg_temp = rolling_ball_background(img, radii(i));
+    img_corrected = img - bg_temp;
+    img_corrected(img_corrected < 0) = 0;
+    
+    % 去噪
+    img_final = medfilt2(img_corrected, [5 5]);
+    
+    % 显示背景
+    subplot(2, 4, i);
+    imshow(bg_temp, []);
+    colormap(gca, custom_cmap);
+    colorbar;
+    title(sprintf('背景 (r=%d)', radii(i)));
+    
+    % 显示处理结果
+    subplot(2, 4, i+4);
+    imshow(img_final, []);
+    colormap(gca, custom_cmap);
+    colorbar;
+    title(sprintf('处理后 (r=%d)', radii(i)));
+end
+
+%% ========================================================================
+%% 保存结果
+%% ========================================================================
+fprintf('正在保存结果...\n');
+
+% 保存16位TIFF（用于后续分析）
+img_result_16bit = uint16(img_median5);
+imwrite(img_result_16bit, 'result_16bit.tif', 'tif', 'Compression', 'none');
+
+% 保存RGB伪彩色图像（用于展示）
+img_normalized = mat2gray(img_median5);
+img_indexed = gray2ind(img_normalized, 256);
+img_rgb = ind2rgb(img_indexed, custom_cmap);
+imwrite(img_rgb, 'result_pseudocolor.png', 'png');
+
+% 保存高分辨率对比图
+figure('Position', [100, 100, 1200, 500]);
+subplot(1,2,1);
+imshow(img, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('原始图像', 'FontSize', 14);
+
+subplot(1,2,2);
+imshow(img_median5, []);
+colormap(gca, custom_cmap);
+colorbar;
+title('处理后', 'FontSize', 14);
+
+print('comparison_high_res', '-dpng', '-r300');
+
+%% 输出统计信息
+fprintf('\n========== 处理完成 ==========\n');
+fprintf('原始图像统计:\n');
+fprintf('  最小值: %.2f\n', min(img(:)));
+fprintf('  最大值: %.2f\n', max(img(:)));
+fprintf('  平均值: %.2f\n', mean(img(:)));
+fprintf('  标准差: %.2f\n', std(img(:)));
+
+fprintf('\n处理后图像统计:\n');
+fprintf('  最小值: %.2f\n', min(img_median5(:)));
+fprintf('  最大值: %.2f\n', max(img_median5(:)));
+fprintf('  平均值: %.2f\n', mean(img_median5(:)));
+fprintf('  标准差: %.2f\n', std(img_median5(:)));
+
+fprintf('\n保存文件:\n');
+fprintf('  result_16bit.tif - 16位TIFF格式\n');
+fprintf('  result_pseudocolor.png - RGB伪彩色图\n');
+fprintf('  comparison_high_res.png - 高分辨率对比图\n');
+fprintf('================================\n');
+
+%% ========================================================================
+%% 子函数定义
+%% ========================================================================
+
+%% Rolling Ball 背景减除
+function background = rolling_ball_background(img, ball_radius)
+    % 使用形态学开运算近似Rolling Ball算法
+    se = strel('disk', ball_radius);
+    background = imopen(img, se);
+end
+
+%% 自定义Colormap：白色+Jet（平滑过渡）
+function cmap = custom_jet_white_smooth(n, white_ratio, transition_ratio)
+    if nargin < 1, n = 256; end
+    if nargin < 2, white_ratio = 0.05; end
+    if nargin < 3, transition_ratio = 0.10; end
+    
+    white_n = round(n * white_ratio);
+    transition_n = round(n * transition_ratio);
+    jet_n = n - white_n - transition_n;
+    
+    % 纯白色部分
+    white_part = ones(white_n, 3);
+    
+    % 获取jet的颜色
+    jet_colors = jet(max(jet_n, 1));
+    if jet_n < 1
+        jet_colors = jet(1);
+    end
+    first_jet_color = jet_colors(1,:);
+    
+    % 过渡部分：白色渐变到jet的起始色
+    transition_part = zeros(transition_n, 3);
+    for i = 1:transition_n
+        ratio = i / transition_n;
+        transition_part(i,:) = (1-ratio) * [1 1 1] + ratio * first_jet_color;
+    end
+    
+    % 合并
+    cmap = [white_part; transition_part; jet_colors];
+end
+
+%% 自适应中值滤波
+function output = adaptive_median_filter(img, Smax)
+    [m, n] = size(img);
+    output = img;
+    
+    for i = 1:m
+        for j = 1:n
+            Sxy = 3;
+            while Sxy <= Smax
+                half = floor(Sxy/2);
+                rmin = max(1, i-half);
+                rmax = min(m, i+half);
+                cmin = max(1, j-half);
+                cmax = min(n, j+half);
+                
+                window = img(rmin:rmax, cmin:cmax);
+                zmin = min(window(:));
+                zmax = max(window(:));
+                zmed = median(window(:));
+                zxy = img(i,j);
+                
+                A1 = zmed - zmin;
+                A2 = zmed - zmax;
+                
+                if A1 > 0 && A2 < 0
+                    B1 = zxy - zmin;
+                    B2 = zxy - zmax;
+                    if B1 > 0 && B2 < 0
+                        output(i,j) = zxy;
+                    else
+                        output(i,j) = zmed;
+                    end
+                    break;
+                else
+                    Sxy = Sxy + 2;
+                end
+                
+                if Sxy > Smax
+                    output(i,j) = zmed;
+                end
+            end
+        end
+    end
+end
+
+%% 开关中值滤波
+function output = switching_median_filter(img, window_size)
+    [m, n] = size(img);
+    output = img;
+    half = floor(window_size/2);
+    
+    for i = half+1:m-half
+        for j = half+1:n-half
+            window = img(i-half:i+half, j-half:j+half);
+            center = img(i,j);
+            zmin = min(window(:));
+            zmax = max(window(:));
+            
+            % 如果是极值点，认为是噪声
+            if center == zmin || center == zmax
+                output(i,j) = median(window(:));
+            end
+        end
+    end
+end

@@ -128,12 +128,10 @@ $$
 
 其中：
 
-```text
-E: 能量，MeV
-A: 质量数
-X0: TPS 原点 X 像素
-Res: 空间分辨率，mm/pixel
-```
+- $E$：能量，$\mathrm{MeV}$
+- $A$：质量数
+- $X_0$：TPS 原点 X 像素
+- $\mathrm{Res}$：空间分辨率，$\mathrm{mm}/\mathrm{pixel}$
 
 因此 TPS 能量 bin 不是等间隔的。程序用相邻像素边界计算每个 bin 的能量宽度：
 
@@ -199,15 +197,11 @@ $$
 
 最终能谱纵轴按当前代码是“相机 count 经 EMGain、QE、MCP 响应、能量 bin 宽度和接收立体角归一化后的谱强度”：
 
-```text
-corrected counts MeV^-1 sr^-1
-```
+$\mathrm{corrected\ counts}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
 只有当 `EMGain`、`QE` 和 MCP 文件第二列都已经完成绝对粒子数标定时，才可进一步解释为：
 
-```text
-particles MeV^-1 sr^-1
-```
+$\mathrm{particles}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
 ## 6. 背景提取
 
@@ -320,15 +314,11 @@ $$
 
 这里 `I_i` 的代码单位更严格地说是：
 
-```text
-corrected counts MeV^-1 sr^-1
-```
+$\mathrm{corrected\ counts}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
 如果 MCP 文件、EMGain 和 QE 已经被标定到绝对粒子数，则可写成：
 
-```text
-particles MeV^-1 sr^-1
-```
+$\mathrm{particles}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
 注意：当前代码直接使用 MCP 文件第二列作为分母。如果第二列是百分比、相对响应或未归一化响应，需要在实验标定中统一定义，否则绝对强度会有比例误差。
 
@@ -356,9 +346,7 @@ $$
 
 单位：
 
-```text
-MeV
-```
+$\mathrm{MeV}$
 
 ### 8.2 `d2N_dE_dOmega_raw_center`
 
@@ -382,11 +370,9 @@ $$
 
 单位：
 
-```text
-corrected counts MeV^-1 sr^-1
-```
+$\mathrm{corrected\ counts}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
-若探测链路已绝对标定，可解释为 `particles MeV^-1 sr^-1`。
+若探测链路已绝对标定，可解释为 $\mathrm{particles}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$。
 
 ### 8.3 `d2N_dE_dOmega_background_subtracted`
 
@@ -404,11 +390,9 @@ $$
 
 单位：
 
-```text
-corrected counts MeV^-1 sr^-1
-```
+$\mathrm{corrected\ counts}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
-若探测链路已绝对标定，可解释为 `particles MeV^-1 sr^-1`。
+若探测链路已绝对标定，可解释为 $\mathrm{particles}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$。
 
 ### 8.4 `d2N_dE_dOmega_smoothed`
 
@@ -436,11 +420,9 @@ corrected counts MeV^-1 sr^-1
 
 单位：
 
-```text
-corrected counts MeV^-1 sr^-1
-```
+$\mathrm{corrected\ counts}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$
 
-若探测链路已绝对标定，可解释为 `particles MeV^-1 sr^-1`。
+若探测链路已绝对标定，可解释为 $\mathrm{particles}\,\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1}$。
 
 ### 8.5 `d2N_dE_dOmega_background`
 
@@ -671,14 +653,12 @@ dE
 
 使用 `D:\software\PW-TPS稳定性\Shot41.tif` 保存能谱测试：
 
-```text
-输出 TXT: 728 行 x 5 列
-Energy: 约 100.68 MeV 到 5.28 MeV
-raw_center: 约 2.37e8 到 1.25e11
-background_subtracted: 可接近 0，到约 1.13e11
-smoothed: 约 6.03e6 到 9.40e10
-background: 约 3.23e7 到 4.90e9
-```
+- 输出 TXT：728 行 x 5 列
+- Energy：约 $100.68\,\mathrm{MeV}$ 到 $5.28\,\mathrm{MeV}$
+- raw_center：约 $2.37\times10^8$ 到 $1.25\times10^{11}$
+- background_subtracted：可接近 0，到约 $1.13\times10^{11}$
+- smoothed：约 $6.03\times10^6$ 到 $9.40\times10^{10}$
+- background：约 $3.23\times10^7$ 到 $4.90\times10^9$
 
 使用 `Shot41-49.tif` 对定量预处理做对比：
 

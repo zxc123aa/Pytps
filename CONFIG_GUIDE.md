@@ -100,9 +100,9 @@ filterMode=	median3
 
 - `X0`, `Y0`：TPS 原点位置，程序内部使用左下角为原点的物理坐标。
 - `±dY`：沿理论谱线中心上下积分的像素半宽。
-- `Emin`, `Emax`：解谱能量范围，单位 MeV。
+- `Emin`, `Emax`：解谱能量范围，单位 $\mathrm{MeV}$。
 - `specEmin`, `specEmax`：能谱图显示范围。
-- `specWindow`：自动截止能量搜索窗口宽度，单位 MeV。
+- `specWindow`：自动截止能量搜索窗口宽度，单位 $\mathrm{MeV}$。
 - `filterMode`：显示滤波模式。当前常用值为 `none`、`median3`、`median5`。显示滤波不改变定量能谱。
 
 ## 5. TPS 仪器参数
@@ -127,7 +127,7 @@ QE=	0.8
 - `U`：电场偏转电压。
 - `EMGain`：相机 EM 增益。
 - `QE`：相机量子效率或等效探测效率。
-- `Res`：图像空间分辨率，单位 mm/pixel。
+- `Res`：图像空间分辨率，单位 $\mathrm{mm}/\mathrm{pixel}$。
 - `S1`, `L0`：用于计算接收立体角。
 
 能谱强度计算会除以 `EMGain * QE`、MCP 响应、能量 bin 宽度和接收立体角。因此这些参数会影响纵轴绝对数值。只有探测链路完成绝对标定时，纵轴才能严格解释为粒子数谱强度。

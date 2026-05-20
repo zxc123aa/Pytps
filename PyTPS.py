@@ -69,6 +69,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.backgroundMode = "offset"
         self.backgroundOffset = -18
         self.backgroundWidth = 6
+        self.analysisPreprocess = "hot_pixel"
+        self.analysisMedianSize = 3
 
         # 初始化文件列表
         TSettings.getList(self)
@@ -956,7 +958,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 创建滤波设置GroupBox
         self.groupBox_filter = QtWidgets.QGroupBox(self.ui.groupBox_2)
         self.groupBox_filter.setObjectName("groupBox_filter")
-        self.groupBox_filter.setTitle("图像滤波设置")
+        self.groupBox_filter.setTitle("显示/Mask 设置")
 
         # 创建垂直布局
         self.verticalLayout_filter = QtWidgets.QVBoxLayout(self.groupBox_filter)
@@ -964,40 +966,52 @@ class MainWindow(QtWidgets.QMainWindow):
         # 滤波模式选择
         self.horizontalLayout_filterMode = QtWidgets.QHBoxLayout()
         self.label_filterMode = QtWidgets.QLabel(self.groupBox_filter)
-        self.label_filterMode.setText("滤波模式：")
+        self.label_filterMode.setText("显示滤波：")
         self.comboBox_filterMode = QtWidgets.QComboBox(self.groupBox_filter)
-        self.comboBox_filterMode.addItems(["无滤波", "形态学分割"])
+        self.comboBox_filterMode.addItems(["原图", "中值3x3", "中值5x5"])
         # 根据配置设置初始值
-        if self.filterMode == "none":
+        if self.filterMode in ("none", "raw"):
             self.comboBox_filterMode.setCurrentIndex(0)
+            self.filterMode = "none"
+        elif self.filterMode == "median5":
+            self.comboBox_filterMode.setCurrentIndex(2)
         else:
+            # 旧配置里的protected/形态学模式迁移为保守的3x3显示中值。
             self.comboBox_filterMode.setCurrentIndex(1)
-            self.filterMode = "protected"  # 统一设置为protected
+            self.filterMode = "median3"
         self.horizontalLayout_filterMode.addWidget(self.label_filterMode)
         self.horizontalLayout_filterMode.addWidget(self.comboBox_filterMode)
         self.verticalLayout_filter.addLayout(self.horizontalLayout_filterMode)
 
-        # === 形态学分割参数区域 ===
+        self.label_analysisPreprocess = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_analysisPreprocess.setText("定量解谱固定使用：3x3热像素中值；下方显示滤波/Mask不改变能谱。")
+        self.label_analysisPreprocess.setStyleSheet("color: #555; font-size: 9pt;")
+        self.label_analysisPreprocess.setWordWrap(True)
+        self.verticalLayout_filter.addWidget(self.label_analysisPreprocess)
 
-        # 轨迹坐标背景减除按钮（更名为多轨迹软掩膜）
+        # 轨迹坐标背景减除按钮（只用于显示清理）
         self.pushButton_trajectoryBgSubtract = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_trajectoryBgSubtract.setText("多轨迹软掩膜滤波")
+        self.pushButton_trajectoryBgSubtract.setText("理论轨迹显示清理")
         self.pushButton_trajectoryBgSubtract.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
         self.verticalLayout_filter.addWidget(self.pushButton_trajectoryBgSubtract)
 
+        self.groupBox_manualMask = QtWidgets.QGroupBox(self.groupBox_filter)
+        self.groupBox_manualMask.setTitle("手工Mask")
+        self.verticalLayout_manualMaskBox = QtWidgets.QVBoxLayout(self.groupBox_manualMask)
+
         self.horizontalLayout_manualMask = QtWidgets.QHBoxLayout()
         self.pushButton_startMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_startMask.setText("开始画Mask")
+        self.pushButton_startMask.setText("开始绘制")
         self.pushButton_finishMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_finishMask.setText("闭合当前")
+        self.pushButton_finishMask.setText("闭合")
         self.pushButton_applyMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_applyMask.setText("应用Mask")
+        self.pushButton_applyMask.setText("应用显示")
         self.pushButton_saveMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_saveMask.setText("保存Mask")
+        self.pushButton_saveMask.setText("保存")
         self.pushButton_loadMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_loadMask.setText("读取Mask")
+        self.pushButton_loadMask.setText("读取")
         self.pushButton_clearMask = QtWidgets.QPushButton(self.groupBox_filter)
-        self.pushButton_clearMask.setText("清除Mask")
+        self.pushButton_clearMask.setText("清除")
         self.horizontalLayout_manualMask.addWidget(self.pushButton_startMask)
         self.horizontalLayout_manualMask.addWidget(self.pushButton_finishMask)
         self.horizontalLayout_manualMask.addWidget(self.pushButton_applyMask)
@@ -1005,8 +1019,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.horizontalLayout_manualMask2.addWidget(self.pushButton_saveMask)
         self.horizontalLayout_manualMask2.addWidget(self.pushButton_loadMask)
         self.horizontalLayout_manualMask2.addWidget(self.pushButton_clearMask)
-        self.verticalLayout_filter.addLayout(self.horizontalLayout_manualMask)
-        self.verticalLayout_filter.addLayout(self.horizontalLayout_manualMask2)
+        self.verticalLayout_manualMaskBox.addLayout(self.horizontalLayout_manualMask)
+        self.verticalLayout_manualMaskBox.addLayout(self.horizontalLayout_manualMask2)
 
         self.horizontalLayout_maskParams = QtWidgets.QHBoxLayout()
         self.label_maskBgSigma = QtWidgets.QLabel(self.groupBox_filter)
@@ -1025,7 +1039,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.horizontalLayout_maskParams.addWidget(self.lineEdit_maskBgSigma)
         self.horizontalLayout_maskParams.addWidget(self.label_maskBgPercentile)
         self.horizontalLayout_maskParams.addWidget(self.lineEdit_maskBgPercentile)
-        self.verticalLayout_filter.addLayout(self.horizontalLayout_maskParams)
+        self.verticalLayout_manualMaskBox.addLayout(self.horizontalLayout_maskParams)
+        self.verticalLayout_filter.addWidget(self.groupBox_manualMask)
 
         self.horizontalLayout_bgMode = QtWidgets.QHBoxLayout()
         self.label_bgMode = QtWidgets.QLabel(self.groupBox_filter)
@@ -1128,16 +1143,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def updateFilterUIState(self):
         """根据当前滤波模式更新UI状态"""
-        if self.filterMode == "none":
-            self.pushButton_trajectoryBgSubtract.setEnabled(False)
-            self.lineEdit_protectionWidth.setEnabled(False)
-            self.lineEdit_fadeRadius.setEnabled(False)
-            # self.lineEdit_rollingBall 始终禁用
-        else:  # protected模式
-            self.pushButton_trajectoryBgSubtract.setEnabled(True)
-            self.lineEdit_protectionWidth.setEnabled(True)
-            self.lineEdit_fadeRadius.setEnabled(True)
-            # self.lineEdit_rollingBall 始终禁用
+        self.pushButton_trajectoryBgSubtract.setEnabled(True)
+        self.lineEdit_protectionWidth.setEnabled(True)
+        self.lineEdit_fadeRadius.setEnabled(True)
 
     def setProtectionWidth(self):
         """设置轨迹保护宽度"""
@@ -1162,8 +1170,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lineEdit_fadeRadius.setText(str(getattr(self, 'fadeRadius', 20)))
 
     def trajectoryBackgroundSubtraction(self):
-        """多轨迹软掩膜滤波：保护所有粒子+原点，软边界羽化"""
-        print("[PyTPS] 点击多轨迹软掩膜滤波")
+        """理论轨迹显示清理：只更新预览图，不改变定量能谱。"""
+        print("[PyTPS] 点击理论轨迹显示清理")
 
         # 直接读取当前图像
         if self.imageFileName == "." or not os.path.isfile(self.imageFileName):
@@ -1176,7 +1184,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 调用新的多轨迹软掩膜滤波函数
         # 保护所有常见粒子（H-1, C-4/5/6, O-6/7/8）+ 原点
-        print(f"[PyTPS] 开始多轨迹软掩膜滤波：保护H/C/O所有轨迹+原点")
+        print(f"[PyTPS] 开始理论轨迹显示清理：保护H/C/O所有轨迹+原点")
 
         fadeRadius = getattr(self, 'fadeRadius', 20)  # 羽化半径
         protectionWidth = self.protectionWidth  # 轨迹保护宽度
@@ -1205,17 +1213,19 @@ class MainWindow(QtWidgets.QMainWindow):
             TDraw.DrawParabola(self)
         TDraw.DrawOrigin(self)
 
-        print(f"[PyTPS] 多轨迹软掩膜滤波完成，仅更新显示图，未改变能谱")
+        print(f"[PyTPS] 理论轨迹显示清理完成，仅更新显示图，未改变能谱")
 
     def setFilterMode(self, index):
-        """设置滤波模式（简化版）"""
+        """设置显示滤波模式。定量解谱不受这里影响。"""
         if index == 0:
             self.filterMode = "none"
         elif index == 1:
-            self.filterMode = "protected"  # 形态学分割
+            self.filterMode = "median3"
+        elif index == 2:
+            self.filterMode = "median5"
         self.updateFilterUIState()
         # 自动应用滤波
-        print(f"滤波模式切换为: {self.filterMode}")
+        print(f"显示滤波模式切换为: {self.filterMode}")
         if self.imageFileName != "." and os.path.isfile(self.imageFileName):
             TSolve.Solve(self)
 

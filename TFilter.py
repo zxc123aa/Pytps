@@ -66,11 +66,16 @@ def applyFilter(img, filterMode, params):
     """
     print(f"[TFilter.applyFilter] 开始滤波: mode={filterMode}")
 
-    if filterMode == "none":
+    if filterMode in ("none", "raw", None):
         print("[TFilter] 无滤波模式，直接返回原图")
         return noFilter(img)
-    elif filterMode == "median":
-        medianSize = params.get('medianSize', 5)
+    elif filterMode in ("median", "median3", "median5"):
+        if filterMode == "median3":
+            medianSize = 3
+        elif filterMode == "median5":
+            medianSize = 5
+        else:
+            medianSize = params.get('medianSize', 5)
         medianIterations = params.get('medianIterations', 1)
         print(f"[TFilter] 中值滤波模式，窗口={medianSize}, 迭代={medianIterations}")
         return medianFilter(img, medianSize, medianIterations)

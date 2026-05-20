@@ -30,6 +30,8 @@ def Solve(app):
             'protectionWidth': app.protectionWidth if hasattr(app, 'protectionWidth') else int(app.dY * 3),
             'aggressiveSize': app.aggressiveSize if hasattr(app, 'aggressiveSize') else 15,
             'gentleSize': app.gentleSize if hasattr(app, 'gentleSize') else 5,
+            'analysisPreprocess': getattr(app, 'analysisPreprocess', 'hot_pixel'),
+            'hotPixelMedianSize': getattr(app, 'analysisMedianSize', 3),
         }
 
         app.rawImage = np.flipud(raw_img)
@@ -118,6 +120,8 @@ def Solve(app):
                     'protectionWidth': app.protectionWidth if hasattr(app, 'protectionWidth') else int(app.dY * 3),
                     'aggressiveSize': app.aggressiveSize if hasattr(app, 'aggressiveSize') else 15,
                     'gentleSize': app.gentleSize if hasattr(app, 'gentleSize') else 5,
+                    'analysisPreprocess': getattr(app, 'analysisPreprocess', 'hot_pixel'),
+                    'hotPixelMedianSize': getattr(app, 'analysisMedianSize', 3),
                 }
                 analysis_img = TFilter.makeAnalysisImage(raw_img, filterParams)
                 data = np.flipud(analysis_img)

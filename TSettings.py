@@ -38,7 +38,7 @@ def TPSinit(app):
     app.Emin, app.Emax, app.specEmin, app.specEmax, app.specdNdEmin, app.specdNdEmax, app.specWindow = float_data[8:15, 1]
 
     # 加载滤波配置（新增）
-    app.filterMode = path_data[15, 1]  # 滤波模式：none, median, morphological, rolling_ball, protected, soft_mask
+    app.filterMode = path_data[15, 1]  # 显示滤波：none, median3, median5；旧protected会在UI中迁移
     app.medianSize = int_data[16, 1]   # 中值滤波窗口大小
     app.medianIterations = int_data[17, 1]  # 中值滤波迭代次数
     app.morphologicalSize = int_data[18, 1]  # 形态学结构元素大小（新增）

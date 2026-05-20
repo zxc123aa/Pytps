@@ -102,13 +102,13 @@ none 相对 3x3 中值：平滑谱积分通常偏高约 1%-3%
 
 ### 4.1 磁场偏转常数
 
-$$
+```math
 L_B = \left(\frac{L}{2} + D\right)L
-$$
+```
 
-$$
+```math
 T_B = Z B L_B \times 0.00998115
-$$
+```
 
 其中：
 
@@ -122,9 +122,9 @@ L, D: TPS 几何长度参数
 
 对每个像素列 `X`：
 
-$$
+```math
 E(X) = \frac{1}{2A}\left[\frac{T_B}{(X-X_0)\,\mathrm{Res}}\right]^2
-$$
+```
 
 其中：
 
@@ -137,45 +137,45 @@ Res: 空间分辨率，mm/pixel
 
 因此 TPS 能量 bin 不是等间隔的。程序用相邻像素边界计算每个 bin 的能量宽度：
 
-$$
+```math
 \Delta E_i = E(X_i-0.5)-E(X_i+0.5)
-$$
+```
 
 ### 4.3 电场偏转与 Y 坐标
 
 电场等效偏转常数：
 
-$$
+```math
 L_{E1}=\frac{L_1D_1+L_1L_2+L_1^2/2}{d}
-$$
+```
 
-$$
+```math
 L_{E2}=\frac{\ln\left(\frac{L_2+L_3}{L_3}\right)(L_2+L_3+D_1)-L_2}{\theta}
-$$
+```
 
-$$
+```math
 L_E=\frac{L_{E1}+L_{E2}}{2}
-$$
+```
 
-$$
+```math
 T_E=\frac{U Z L_E}{10^6}
-$$
+```
 
 理论轨迹中心：
 
-$$
+```math
 Y_\mathrm{center}(E)=Y_0+\frac{T_E}{E\,\mathrm{Res}}
-$$
+```
 
 积分带：
 
-$$
+```math
 Y_\min=\left\lfloor Y_\mathrm{center}-dY\right\rfloor
-$$
+```
 
-$$
+```math
 Y_\max=\left\lceil Y_\mathrm{center}+dY\right\rceil
-$$
+```
 
 `dY` 是 UI 中的 `±dY`，单位为像素。
 
@@ -183,19 +183,19 @@ $$
 
 程序使用准直孔几何估计接收立体角：
 
-$$
+```math
 \Omega_0=\frac{\pi(S_1/2)^2}{L_0^2}
-$$
+```
 
 考虑 `dY` 积分宽度可能小于理论接收宽度，程序再乘以修正因子：
 
-$$
+```math
 dY_{\max}=\left\lceil\frac{S_1/2}{L_0}\frac{L_0+D+L}{\mathrm{Res}}\right\rceil
-$$
+```
 
-$$
+```math
 \Omega=\Omega_0\min\left(1,\frac{2dY}{2dY_{\max}}\right)
-$$
+```
 
 最终能谱纵轴按当前代码是“相机 count 经 EMGain、QE、MCP 响应、能量 bin 宽度和接收立体角归一化后的谱强度”：
 
@@ -222,13 +222,13 @@ particles MeV^-1 sr^-1
 
 对每个能量 bin，也就是每个 X 列：
 
-$$
+```math
 C_\mathrm{center}=\sum_{y=Y_\min}^{Y_\max} I(y,X)
-$$
+```
 
-$$
+```math
 N_\mathrm{center}=\mathrm{number\ of\ pixels\ in\ center\ band}
-$$
+```
 
 `center_sum` 是中心带原始积分，包含信号和背景。
 
@@ -238,14 +238,14 @@ $$
 
 背景采样区域沿同一条理论抛物线形状整体平移：
 
-$$
+```math
 y_\mathrm{bg}=y_\mathrm{center}+\Delta y_\mathrm{bg}
-$$
+```
 
-$$
+```math
 y_{\mathrm{bg},\min}=y_\mathrm{bg}-\frac{w_\mathrm{bg}}{2},\qquad
 y_{\mathrm{bg},\max}=y_\mathrm{bg}+\frac{w_\mathrm{bg}}{2}
-$$
+```
 
 UI 参数：
 
@@ -276,21 +276,21 @@ width = max(4, 2*dY)
 
 不论使用哪种背景模式，程序把采样到的背景像素合并为 `sideband`，并用中位数估计背景水平：
 
-$$
+```math
 B_\mathrm{level}=\mathrm{median}(\mathrm{sideband})
-$$
+```
 
 背景涨落估计：
 
-$$
+```math
 \sigma_B = 1.4826\,\mathrm{median}\left(|\mathrm{sideband}-B_\mathrm{level}|\right)
-$$
+```
 
 如果 MAD 为 0，则退化为标准差：
 
-$$
+```math
 \sigma_B=\mathrm{std}(\mathrm{sideband})
-$$
+```
 
 ## 7. 能谱强度计算
 
@@ -302,21 +302,21 @@ Energy(MeV)    efficiency_or_response
 
 程序对当前能量 `E_i` 进行线性插值，得到：
 
-$$
+```math
 \eta_\mathrm{MCP}(E_i)
-$$
+```
 
 相机 count 先除以：
 
-$$
+```math
 \mathrm{EMGain}\times QE
-$$
+```
 
 然后除以 MCP 效率、能量 bin 宽度和接收立体角：
 
-$$
+```math
 I_i=\frac{C_i}{\mathrm{EMGain}\,QE\,\eta_\mathrm{MCP}(E_i)\,\Delta E_i\,\Omega}
-$$
+```
 
 这里 `I_i` 的代码单位更严格地说是：
 
@@ -350,9 +350,9 @@ d2N_dE_dOmega_background
 
 能量轴：
 
-$$
+```math
 E_i=\frac{1}{2A}\left[\frac{T_B}{(X_i-X_0)\,\mathrm{Res}}\right]^2
-$$
+```
 
 单位：
 
@@ -364,13 +364,13 @@ MeV
 
 中心带原始积分谱：
 
-$$
+```math
 C_\mathrm{raw}=\sum(\mathrm{center})
-$$
+```
 
-$$
+```math
 I_\mathrm{raw}=\frac{C_\mathrm{raw}}{\mathrm{EMGain}\,QE\,\eta_\mathrm{MCP}\,\Delta E\,\Omega}
-$$
+```
 
 特点：
 
@@ -392,13 +392,13 @@ corrected counts MeV^-1 sr^-1
 
 扣背景后的净谱：
 
-$$
+```math
 C_\mathrm{net}=\sum(\mathrm{center})-B_\mathrm{level}N_\mathrm{center}
-$$
+```
 
-$$
+```math
 I_\mathrm{net}=\frac{C_\mathrm{net}}{\mathrm{EMGain}\,QE\,\eta_\mathrm{MCP}\,\Delta E\,\Omega}
-$$
+```
 
 当前实现中，如果 `C_net <= 0`，校准函数会用一个极小正数 `1e-30` 代替，以便在对数坐标中绘图。因此高能端可能出现非常接近 0 的数值。
 
@@ -446,9 +446,9 @@ corrected counts MeV^-1 sr^-1
 
 背景水平谱：
 
-$$
+```math
 I_{B,\mathrm{level}}=\frac{B_\mathrm{level}}{\mathrm{EMGain}\,QE\,\eta_\mathrm{MCP}\,\Delta E\,\Omega}
-$$
+```
 
 重要说明：
 
@@ -458,15 +458,15 @@ $$
 
 也就是说它不是：
 
-$$
+```math
 B_\mathrm{level}N_\mathrm{center}
-$$
+```
 
 因此它适合观察背景趋势和噪声水平，但如果要和 `raw_center` 做严格逐点相减，应使用：
 
-$$
+```math
 B_\mathrm{equiv}=B_\mathrm{level}N_\mathrm{center}
-$$
+```
 
 当前 TXT 尚未单独保存 `background_equivalent_center_band`。如需更严格的数据产品，建议后续增加该列。
 
@@ -483,9 +483,9 @@ Smoothed background-subtracted
 
 纵轴标签当前写成：
 
-$$
+```math
 \frac{d^2N}{dE\,d\Omega}\quad(\mathrm{protons/ions}\;\mathrm{MeV}^{-1}\,\mathrm{sr}^{-1})
-$$
+```
 
 这是实验解释标签。严格性取决于 MCP、EMGain、QE 是否完成绝对标定；代码实际做的是 corrected-count 归一化。
 

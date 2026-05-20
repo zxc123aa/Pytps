@@ -79,9 +79,9 @@ d2N_dE_dOmega_background
 
 当前纵轴计算会除以：
 
-```math
+$$
 \mathrm{EMGain}\times QE\times \mathrm{MCP\_response}(E)\times \Delta E\times \Omega
-```
+$$
 
 因此更严格地说，代码输出是经探测链路响应修正后的单位能量单位立体角谱强度。只有当 `EMGain`、`QE` 和 MCP 文件已经完成绝对粒子数标定时，纵轴才能严格解释为 `particles MeV^-1 sr^-1`。
 

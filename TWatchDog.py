@@ -25,12 +25,21 @@ class MyHandler(FileSystemEventHandler):
                 self.app.imageFig.clf()
                 self.app.specFig.clf()
             self.app.imageFileName = os.path.join(self.app.imagePath, file_name)
+            # 新图自动解谱，但截止能量只认手动光标：先清零
+            self.app.isManualCursor = False
+            self.app.specCursor = 0.0
+            self.app.imageCursor = None
             TSolve.Solve(self.app)
+            if hasattr(self.app, "ensureSavePath"):
+                self.app.ensureSavePath()
+            else:
+                os.makedirs(os.path.dirname(self.app.onlineCutoffEnergyListName), exist_ok=True)
             with open(self.app.onlineCutoffEnergyListName, 'a') as f:
-                if isinstance(self.app.cutoffEnergy, str):
-                    f.write(str(file_name) + "\t" + "NaN" + '\n')
+                ce = getattr(self.app, "specCursor", 0.0)
+                if isinstance(ce, (int, float)) and ce > 0:
+                    f.write(str(file_name) + "\t" + str(round(float(ce), 2)) + "MeV\n")
                 else:
-                    f.write(str(file_name) + "\t" + str(self.app.cutoffEnergy) + "MeV" + '\n')
+                    f.write(str(file_name) + "\t" + "待手动确认\n")
             autoTrigger()
         else:
             pass

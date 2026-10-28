@@ -65,14 +65,10 @@ def Solve(app):
             app.TPS, app.specData[0], app.X0, app.Y0, app.A, app.Z,
             app.imageData.shape[1], getattr(app, 'backgroundOffset', -18)
         )
-        app.cutoffEnergy = SolveSpectrum.CutoffEnergySNR(
-            app.specData, app.noiseSpec, app.Emin, app.Emax,
-            snr_threshold=getattr(app, 'cutoffSnrThreshold', 3.0),
-            consecutive=getattr(app, 'cutoffConsecutiveBins', 3),
-            smooth_window=getattr(app, 'spectrumSmoothWindow', 9)
-        )
-        if not getattr(app, 'isManualCursor', False):
-            app.specCursor = app.cutoffEnergy if not isinstance(app.cutoffEnergy, str) else 0
+        # 截止能量只认手动光标（用户要求：不自动寻找）。
+        # 批量分析模式仍用 CutoffEnergySNR 自动值（见下方 isAnalysing 分支）。
+        if getattr(app, 'isManualCursor', False) and \
+                isinstance(app.specCursor, (int, float)) and app.specCursor > 0:
             app.imageCursor = TPSParabola.CutoffLine(app.TPS, app.specCursor, app.X0, app.A, app.Z)
         TDraw.DrawImage(app)
         TDraw.DrawSpec(app)
@@ -81,7 +77,11 @@ def Solve(app):
             TDraw.DrawParabola(app)
 
         TDraw.DrawOrigin(app)
-        app.ui.lineEdit_cutoff.setText(str(app.cutoffEnergy))
+        if getattr(app, 'isManualCursor', False) and \
+                isinstance(app.specCursor, (int, float)) and app.specCursor > 0:
+            app.ui.lineEdit_cutoff.setText(str(np.round(app.specCursor, 2)))
+        else:
+            app.ui.lineEdit_cutoff.setText("")   # 未点击光标前留空，不显示自动值
         # app.pv.put(app.cutoffEnergy)
 
         if app.isAutoSave == True:

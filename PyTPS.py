@@ -8,8 +8,25 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 import os
+import json
 from watchdog.observers import Observer
 import datetime
+import threading
+import urllib.request
+
+
+# ============ 打靶日志系统上报配置 ============
+# 截止能量确认后自动上报：优先发 8767 填报页（按文件名精确匹配发次行，
+# 8767 页面同步显示），helper 不可达时直连 A 机（按图片 mtime 匹配时间窗）。
+LOG_HELPER_URL = "http://127.0.0.1:8767"
+LOG_SERVER_URL = "http://10.0.23.155:8765"
+LOG_ENERGY_FIELD = "tps_h"
+LOG_MATCH_WINDOW = 15
+
+
+class _ReportSignal(QtCore.QObject):
+    """后台线程上报结果 → 主线程状态栏提示"""
+    done = QtCore.Signal(str)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -38,6 +55,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode = "offline"
         self.zoomed = False
         self.isShowParabola = False
+        self.isShowParticleLabel = False
+        self.enabledParticleLabels = set()
         self.isAutoSave = False
         self.isAnalysing = False
         self.is8bitImage = False
@@ -71,6 +90,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.backgroundWidth = 6
         self.analysisPreprocess = "hot_pixel"
         self.analysisMedianSize = 3
+        self.spectrumScale = "log"
+        self.cutoffMemoryFile = os.path.join(".", "cutoff_memory.json")
+        self.cutoffMemory = self.loadCutoffMemory()
+        self._reportSignal = _ReportSignal()
+        self._reportSignal.done.connect(self.showReportStatus)
+        self.useDefaultSavePath = True
 
         # 初始化文件列表
         TSettings.getList(self)
@@ -80,6 +105,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 初始化参数写入GUI
         self.ui.lineEdit_imagePath.setText(self.imagePath)
+        self.ensureSavePath()
         self.ui.lineEdit_savePath.setText(self.savePath)
         self.ui.lineEdit_MCPPath.setText(self.MCPPath)
         self.ui.lineEdit_X0.setText(np.str_(self.X0))
@@ -165,6 +191,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 是否显示参考抛物线
         self.ui.checkBox_parabola.stateChanged.connect(self.showParabola)
+        self.createParticleLabelCheckbox()
 
         # 保存当前结果
         self.ui.pushButton_saveSpec.clicked.connect(self.saveSpec)
@@ -186,6 +213,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.pushButton_about.clicked.connect(self.about)
 
         # 添加对比窗口按钮（新增）
+        self.createCutoffMemoryButton()
         self.createCompareButton()
 
     # 各种槽函数
@@ -197,6 +225,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.imagePath = path
         self.ui.lineEdit_imagePath.setText(self.imagePath)
+        if self.useDefaultSavePath:
+            self.ensureSavePath()
         if self.mode == "online":
             observer.unschedule_all()
             observer.schedule(event_handler, self.imagePath, recursive=False)
@@ -216,11 +246,37 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "错误", "路径不存在，请重新选择！")
             return
         self.savePath = path
+        self.useDefaultSavePath = False
         self.ui.lineEdit_savePath.setText(self.savePath)
 
+    def ensureSavePath(self):
+        if getattr(self, "useDefaultSavePath", True):
+            image_path = os.fspath(self.imagePath) if self.imagePath else "."
+            path = os.path.join(image_path, "能谱处理")
+        else:
+            path = os.fspath(self.savePath) if self.savePath else "."
+        try:
+            os.makedirs(path, exist_ok=True)
+            self.savePath = path
+            if hasattr(self, "ui"):
+                self.ui.lineEdit_savePath.setText(self.savePath)
+            return path
+        except OSError:
+            fallback = os.path.join(".", "output", "能谱处理")
+            os.makedirs(fallback, exist_ok=True)
+            print(f"[PyTPS] 保存路径不可用：{path}，已切换到：{fallback}")
+            self.savePath = fallback
+            if hasattr(self, "ui"):
+                self.ui.lineEdit_savePath.setText(self.savePath)
+            return fallback
+
     def refreshImagePath(self):
+        self.imagePath = self.ui.lineEdit_imagePath.text()
         self.ui.listWidget.clear()
         TSettings.getList(self)
+        self.ui.lineEdit_imagePath.setText(self.imagePath)
+        if self.useDefaultSavePath:
+            self.ensureSavePath()
 
     def openTPS(self):
         os.startfile("TPS_Settings.ini")
@@ -349,11 +405,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.specWindow = float(self.ui.lineEdit_specWindow.text())
         TSolve.Solve(self)
 
+    def setSpectrumScale(self, index):
+        self.spectrumScale = "linear" if index == 1 else "log"
+        if self.isAnalysing == False:
+            TDraw.DrawSpec(self)
+        else:
+            TDraw.DrawAnalysingSpec(self)
+
     def selectImage(self, item):
         if self.isAnalysing == False:
             self.isManualCursor = False
+            self.specCursor = 0.0          # 换图后光标清零，截止能量需重新手动点选
+            self.imageCursor = None
             self.imageFileName = os.path.join(self.imagePath, item.text())
+            if self.useDefaultSavePath:
+                self.ensureSavePath()
             TSolve.Solve(self)
+            self.applyRememberedCutoff()
         else:
             list = self.ui.listWidget.selectedItems()
             self.analysingFileList = []
@@ -361,10 +429,148 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.analysingFileList.append(os.path.join(self.imagePath, item.text()))
             TSolve.Solve(self)
 
+    def cutoffMemoryKey(self, path=None):
+        if path is None:
+            path = self.imageFileName
+        return os.path.basename(os.path.normpath(os.fspath(path)))
+
+    def loadCutoffMemory(self):
+        try:
+            with open(self.cutoffMemoryFile, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+        memory = {}
+        for key, value in data.items():
+            try:
+                memory[str(key)] = float(value)
+            except (TypeError, ValueError):
+                pass
+        return memory
+
+    def saveCutoffMemory(self):
+        try:
+            with open(self.cutoffMemoryFile, "w", encoding="utf-8") as f:
+                json.dump(self.cutoffMemory, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "保存失败", f"截止能量记忆保存失败：{exc}")
+
+    def applyRememberedCutoff(self):
+        if self.imageFileName == "." or not os.path.isfile(self.imageFileName):
+            return False
+        key = self.cutoffMemoryKey()
+        if key not in self.cutoffMemory:
+            return False
+
+        cutoff = float(self.cutoffMemory[key])
+        self.isManualCursor = True
+        self.cutoffEnergy = cutoff
+        self.specCursor = cutoff
+        self.imageCursor = TPSParabola.CutoffLine(self.TPS, self.specCursor, self.X0, self.A, self.Z)
+        if self.zoomed:
+            self.zoomImageCursor = TPSParabola.zoomCutoffLine(self.imageCursor, self.zoomToOrigin)
+        self.ui.lineEdit_cutoff.setText(str(np.round(cutoff, 2)))
+        TDraw.DrawImage(self)
+        TDraw.DrawOrigin(self)
+        TDraw.DrawSpec(self)
+        self.drawActiveOverlays()
+        print(f"[PyTPS] 已载入记忆截止能量：{key} -> {cutoff:.2f} MeV")
+        return True
+
+    def rememberCurrentCutoff(self):
+        if self.isAnalysing:
+            QtWidgets.QMessageBox.information(self, "提示", "批量分析模式下不保存单张图片截止能量。")
+            return
+        if self.imageFileName == "." or not os.path.isfile(self.imageFileName):
+            QtWidgets.QMessageBox.information(self, "提示", "请先选择一张图片。")
+            return
+        if isinstance(getattr(self, "specCursor", None), str) or \
+                not getattr(self, "specCursor", None):
+            QtWidgets.QMessageBox.information(
+                self, "提示", "请先在能谱图上点击选择截止能量（确认的是光标位置）。")
+            return
+
+        cutoff = float(np.round(self.specCursor, 2))
+        key = self.cutoffMemoryKey()
+        self.cutoffMemory[key] = cutoff
+        self.cutoffEnergy = cutoff
+        self.ui.lineEdit_cutoff.setText(str(cutoff))
+        self.saveCutoffMemory()
+        print(f"[PyTPS] 已记忆截止能量：{key} -> {cutoff:.2f} MeV")
+        # 同步上报打靶日志系统（后台线程，不阻塞界面）
+        threading.Thread(target=self.reportCutoffToLogSystem,
+                         args=(key, cutoff), daemon=True).start()
+
+    def showReportStatus(self, msg):
+        """状态栏显示上报结果（信号槽保证线程安全）"""
+        self.statusBar().showMessage(msg, 8000)
+
+    def reportCutoffToLogSystem(self, filename, energy):
+        """把确认的截止能量上报到打靶日志系统。
+        1) 优先 POST 8767 填报页 /api/energy_remote：按文件名精确匹配发次行，
+           8767 页面与 A 机表格同时更新（与人工在 8767 点"发送"完全等价）；
+        2) helper 不可达/未匹配时，兜底直连 A 机 /api/energy，
+           shot_time 用图片文件 mtime（与 helper 的发次时间算法一致）。"""
+        energy_s = str(energy)
+        try:
+            energy_f = float(energy)          # 仅供提示信息格式化，避免 str 误用 :.2f
+        except (TypeError, ValueError):
+            energy_f = 0.0
+        # ---- 1) 8767 helper ----
+        try:
+            body = json.dumps({"filename": filename,
+                               "energy": energy_s,
+                               "field": LOG_ENERGY_FIELD}).encode("utf-8")
+            req = urllib.request.Request(
+                LOG_HELPER_URL + "/api/energy_remote", data=body,
+                headers={"Content-Type": "application/json"})
+            j = json.loads(urllib.request.urlopen(req, timeout=5)
+                           .read().decode("utf-8"))
+            if j.get("ok"):
+                msg = f"✔ 能量 {energy_f:.2f} MeV 已上报日志系统（{filename}）"
+                print(f"[PyTPS] {msg}")
+                self._reportSignal.done.emit(msg)
+                return
+            reason = j.get("message") or j.get("error") or "未知原因"
+            print(f"[PyTPS] helper 未匹配：{reason}，尝试直连 A 机…")
+        except Exception as exc:
+            print(f"[PyTPS] helper 不可达（{exc}），尝试直连 A 机…")
+        # ---- 2) 兜底直连 A 机 ----
+        try:
+            fp = self.imageFileName if os.path.basename(
+                self.imageFileName) == filename else os.path.join(
+                self.imagePath, filename)
+            st = datetime.datetime.fromtimestamp(
+                os.path.getmtime(fp)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            body = json.dumps({
+                "shot_time": st, "energy": energy_s,
+                "field": LOG_ENERGY_FIELD, "machine": "PyTPS",
+                "window_sec": LOG_MATCH_WINDOW}).encode("utf-8")
+            req = urllib.request.Request(
+                LOG_SERVER_URL + "/api/energy", data=body,
+                headers={"Content-Type": "application/json"})
+            j = json.loads(urllib.request.urlopen(req, timeout=5)
+                           .read().decode("utf-8"))
+            if j.get("ok"):
+                msg = f"✔ 能量 {energy_f:.2f} MeV 已直报 A 机（{filename}，按 mtime {st}）"
+                print(f"[PyTPS] {msg}")
+            else:
+                msg = f"✘ A 机未匹配发次：{j.get('error')}（{filename}）"
+                print(f"[PyTPS] {msg}")
+        except Exception as exc:
+            msg = f"✘ 能量上报失败：{exc}（{filename} = {energy_s} MeV）"
+            print(f"[PyTPS] {msg}")
+        self._reportSignal.done.emit(msg)
+
     def modeSwitch(self):
         button = self.sender()
         if self.ui.radioButton_online.isChecked() and button.text() == "在线模式":
             self.mode = "online"
+            self.ensureSavePath()
             observer.schedule(event_handler, self.imagePath, recursive=False)
             self.ui.listWidget.setEnabled(False)
             timeformat = "%Y%m%d-%H%M%S"
@@ -379,8 +585,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.listWidget.setEnabled(True)
             timeformat = "%Y%m%d-%H%M%S"
             time = datetime.datetime.now().strftime(timeformat)
-            with open(self.onlineCutoffEnergyListName, 'a') as f:
-                f.write("结束于" + time + '\n')
+            if hasattr(self, "onlineCutoffEnergyListName"):
+                self.ensureSavePath()
+                with open(self.onlineCutoffEnergyListName, 'a') as f:
+                    f.write("结束于" + time + '\n')
 
     def analyseMode(self):
         if self.ui.checkBox_analyse.isChecked():
@@ -417,6 +625,57 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.zoomed == False:
             TDraw.DrawOrigin(self)
 
+    def createParticleLabelCheckbox(self):
+        self.checkBox_particleLabel = QtWidgets.QCheckBox(self.ui.groupBox_5)
+        self.checkBox_particleLabel.setText("显示多离子种类")
+        self.checkBox_particleLabel.setObjectName("checkBox_particleLabel")
+        self.ui.verticalLayout_4.addWidget(self.checkBox_particleLabel)
+        self.checkBox_particleLabel.stateChanged.connect(self.showParticleLabel)
+
+        self.groupBox_particleLabels = QtWidgets.QGroupBox(self.ui.groupBox_5)
+        self.groupBox_particleLabels.setTitle("离子标签（同荷质比合并）")
+        self.groupBox_particleLabels.setObjectName("groupBox_particleLabels")
+        self.gridLayout_particleLabels = QtWidgets.QGridLayout(self.groupBox_particleLabels)
+        self.particleLabelChecks = {}
+        labels = ["H-1", "C-6", "O-8", "O-7", "C-5", "O-6", "C-4", "O-5", "C-3", "O-4", "C-2", "C-1"]
+        self.enabledParticleLabels = set(labels)
+        for i, label in enumerate(labels):
+            check = QtWidgets.QCheckBox(self.groupBox_particleLabels)
+            check.setText(label)
+            check.setChecked(True)
+            check.stateChanged.connect(self.updateParticleLabelSelection)
+            self.particleLabelChecks[label] = check
+            self.gridLayout_particleLabels.addWidget(check, i // 3, i % 3)
+        self.groupBox_particleLabels.setEnabled(False)
+        self.ui.verticalLayout_4.addWidget(self.groupBox_particleLabels)
+
+    def showParticleLabel(self):
+        self.isShowParticleLabel = self.checkBox_particleLabel.isChecked()
+        self.groupBox_particleLabels.setEnabled(self.isShowParticleLabel)
+        TDraw.DrawImage(self)
+        TDraw.DrawSpec(self)
+        self.drawActiveOverlays()
+        if self.zoomed == False:
+            TDraw.DrawOrigin(self)
+
+    def updateParticleLabelSelection(self):
+        self.enabledParticleLabels = {
+            label for label, check in self.particleLabelChecks.items()
+            if check.isChecked()
+        }
+        if self.isShowParticleLabel:
+            TDraw.DrawImage(self)
+            TDraw.DrawSpec(self)
+            self.drawActiveOverlays()
+            if self.zoomed == False:
+                TDraw.DrawOrigin(self)
+
+    def drawActiveOverlays(self):
+        if self.isShowParabola:
+            TDraw.DrawParabola(self)
+        elif self.isShowParticleLabel:
+            TDraw.DrawSelectedParticleLabels(self)
+
     def autoSave(self):
         if self.ui.checkBox_autoSave.isChecked():
             self.isAutoSave = True
@@ -427,6 +686,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def saveSpec(self):
         if os.path.isfile(self.imageFileName):
+            self.ensureSavePath()
             if self.isAnalysing == False:
                 if isinstance(self.cutoffEnergy, str):
                     specPicFileName = os.path.normcase(os.path.join(self.savePath, os.path.splitext(
@@ -464,6 +724,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def saveImage(self):
         if os.path.isfile(self.imageFileName):
+            self.ensureSavePath()
             imagePicFileName = os.path.normcase(
                 os.path.join(self.savePath, os.path.splitext(os.path.split(self.imageFileName)[1])[0] + "_color.png"))
             self.imageFig.savefig(imagePicFileName)
@@ -517,8 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         TDraw.DrawImage(self)
         TDraw.DrawSpec(self)
-        if self.isShowParabola:
-            TDraw.DrawParabola(self)
+        self.drawActiveOverlays()
 
     def wheelZoom(self, event):
         if event.inaxes != getattr(self, 'ax_image', None) or event.xdata is None or event.ydata is None:
@@ -589,8 +849,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.zoomPic = self.imageData
         TDraw.DrawImage(self)
         TDraw.DrawOrigin(self)
-        if self.isShowParabola:
-            TDraw.DrawParabola(self)
+        self.drawActiveOverlays()
 
     def setSpecCursor(self, event):
         if event.xdata is None:
@@ -598,14 +857,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.isManualCursor = True
         if self.isAnalysing == False:
             self.specCursor = event.xdata
+            # 截止能量框实时跟随光标（手动点击即所见即所得）
+            self.ui.lineEdit_cutoff.setText(str(np.round(event.xdata, 2)))
             self.imageCursor = TPSParabola.CutoffLine(self.TPS, self.specCursor, self.X0, self.A, self.Z)
             if self.zoomed == True:
                 self.zoomImageCursor = TPSParabola.zoomCutoffLine(self.imageCursor, self.zoomToOrigin)
             TDraw.DrawImage(self)
             TDraw.DrawOrigin(self)
             TDraw.DrawSpec(self)
-            if self.isShowParabola:
-                TDraw.DrawParabola(self)
+            self.drawActiveOverlays()
         else:
             self.specCursor = event.xdata
             TDraw.DrawAnalysingSpec(self)
@@ -698,8 +958,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.zoomPic = self.displayImage
         self.isDrawingMask = False
         TDraw.DrawImage(self)
-        if self.isShowParabola:
-            TDraw.DrawParabola(self)
+        self.drawActiveOverlays()
         TDraw.DrawOrigin(self)
         print("[PyTPS] 已应用手工Mask：Mask内保留，Mask外匀化为背景。")
 
@@ -755,9 +1014,8 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self.zoomPic = self.displayImage
             TDraw.DrawImage(self)
-            if self.isShowParabola:
-                TDraw.DrawParabola(self)
-                TDraw.DrawOrigin(self)
+            self.drawActiveOverlays()
+            TDraw.DrawOrigin(self)
         print("[PyTPS] 已清除手工Mask。")
 
     def setMaskBgSigma(self):
@@ -932,8 +1190,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.manualMaskPoints = []
         self.manualMaskPolygons = loaded_polygons
         TDraw.DrawImage(self)
-        if self.isShowParabola:
-            TDraw.DrawParabola(self)
+        self.drawActiveOverlays()
         TDraw.DrawOrigin(self)
         print(f"[PyTPS] 已读取Mask: {mask_path}")
 
@@ -1083,6 +1340,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.horizontalLayout_smooth.addStretch()
         self.verticalLayout_filter.addLayout(self.horizontalLayout_smooth)
 
+        self.horizontalLayout_spectrumScale = QtWidgets.QHBoxLayout()
+        self.label_spectrumScale = QtWidgets.QLabel(self.groupBox_filter)
+        self.label_spectrumScale.setText("能谱坐标：")
+        self.comboBox_spectrumScale = QtWidgets.QComboBox(self.groupBox_filter)
+        self.comboBox_spectrumScale.addItems(["半对数", "线性"])
+        self.comboBox_spectrumScale.setCurrentIndex(1 if self.spectrumScale == "linear" else 0)
+        self.horizontalLayout_spectrumScale.addWidget(self.label_spectrumScale)
+        self.horizontalLayout_spectrumScale.addWidget(self.comboBox_spectrumScale)
+        self.horizontalLayout_spectrumScale.addStretch()
+        self.verticalLayout_filter.addLayout(self.horizontalLayout_spectrumScale)
+
         # 轨迹保护宽度（新增）
         self.horizontalLayout_protectionWidth = QtWidgets.QHBoxLayout()
         self.label_protectionWidth = QtWidgets.QLabel(self.groupBox_filter)
@@ -1135,6 +1403,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lineEdit_bgOffset.editingFinished.connect(self.setBackgroundOffset)
         self.lineEdit_bgWidth.editingFinished.connect(self.setBackgroundWidth)
         self.lineEdit_smoothWindow.editingFinished.connect(self.setSpectrumSmoothWindow)
+        self.comboBox_spectrumScale.currentIndexChanged.connect(self.setSpectrumScale)
         self.lineEdit_protectionWidth.editingFinished.connect(self.setProtectionWidth)
         self.lineEdit_fadeRadius.editingFinished.connect(self.setFadeRadius)
 
@@ -1209,8 +1478,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         TDraw.DrawImage(self)
         TDraw.DrawSpec(self)
-        if self.isShowParabola:
-            TDraw.DrawParabola(self)
+        self.drawActiveOverlays()
         TDraw.DrawOrigin(self)
 
         print(f"[PyTPS] 理论轨迹显示清理完成，仅更新显示图，未改变能谱")
@@ -1228,6 +1496,18 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"显示滤波模式切换为: {self.filterMode}")
         if self.imageFileName != "." and os.path.isfile(self.imageFileName):
             TSolve.Solve(self)
+
+    def createCutoffMemoryButton(self):
+        """创建确认截止能量按钮"""
+        self.ui.label_16.setText("截止能量(光标处)：")   # 原"仅供参考"框改为显示手动光标能量
+        self.pushButton_rememberCutoff = QtWidgets.QPushButton(self.ui.groupBox_7)
+        self.pushButton_rememberCutoff.setText("确认截止能量")
+        self.pushButton_rememberCutoff.setObjectName("pushButton_rememberCutoff")
+        self.pushButton_rememberCutoff.setStyleSheet(
+            "QPushButton { background-color: #1976D2; color: white; font-weight: bold; padding: 5px; }"
+        )
+        self.ui.verticalLayout_spec.addWidget(self.pushButton_rememberCutoff)
+        self.pushButton_rememberCutoff.clicked.connect(self.rememberCurrentCutoff)
 
     def createCompareButton(self):
         """创建谱线对比按钮"""

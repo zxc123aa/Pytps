@@ -1,6 +1,8 @@
 import TImageRead
 import numpy as np
 import os
+import TPSParabola
+from math import gcd
 
 
 def _spectrum_particle_label(app):
@@ -22,6 +24,13 @@ def _set_spectrum_axes(app):
     )
     app.ax_spec.minorticks_on()
     app.ax_spec.tick_params(direction="in", which="both", top=True, right=True, labelsize=12)
+
+
+def _plot_spectrum_line(app, x, y, **kwargs):
+    if getattr(app, "spectrumScale", "log") == "linear":
+        app.ax_spec.plot(x, y, **kwargs)
+    else:
+        app.ax_spec.semilogy(x, y, **kwargs)
 
 
 def _finish_spectrum_layout(app):
@@ -68,23 +77,25 @@ def DrawSpec(app):
         app.ax_spec.set_ylim(app.specdNdEmin, app.specdNdEmax)
         _set_spectrum_axes(app)
         if hasattr(app, "specDataRaw"):
-            app.ax_spec.semilogy(app.specDataRaw[0], app.specDataRaw[1], alpha=0.45, linewidth=1.0,
-                                 label="Raw center-band")
+            _plot_spectrum_line(app, app.specDataRaw[0], app.specDataRaw[1], alpha=0.45, linewidth=1.0,
+                                label="Raw center-band")
         if hasattr(app, "noiseSpec"):
-            app.ax_spec.semilogy(app.noiseSpec[0], app.noiseSpec[1], alpha=0.55, linewidth=1.0,
-                                 linestyle='--', label="Raw background")
+            _plot_spectrum_line(app, app.noiseSpec[0], app.noiseSpec[1], alpha=0.55, linewidth=1.0,
+                                linestyle='--', label="Raw background")
         if hasattr(app, "specDataNet"):
-            app.ax_spec.semilogy(app.specDataNet[0], app.specDataNet[1], alpha=0.65, linewidth=1.1,
-                                 label="Background-subtracted")
-        app.ax_spec.semilogy(app.specData[0], app.specData[1], linewidth=2.0,
-                             label="Smoothed background-subtracted")
+            _plot_spectrum_line(app, app.specDataNet[0], app.specDataNet[1], alpha=0.65, linewidth=1.1,
+                                label="Background-subtracted")
+        _plot_spectrum_line(app, app.specData[0], app.specData[1], linewidth=2.0,
+                            label="Smoothed background-subtracted")
         _finish_spectrum_layout(app)
         # app.ax_spec.plot(app.specData[0], app.specData[1])
         # app.ax_spec.plot(app.noiseSpec[0], app.noiseSpec[1])
 
-        if isinstance(app.specCursor, str):
-            pass
-        else:
+        try:
+            show_cursor = float(app.specCursor) > 0   # 仅画有效的手动光标（>0）
+        except (TypeError, ValueError):
+            show_cursor = False
+        if show_cursor:
             app.ax_spec.axvline(app.specCursor, linewidth=1.2, color='black')
             app.ui.lineEdit_cursor.setText(str(np.round(app.specCursor, 2)))
             # app.pv.put(np.round(app.specCursor,2))
@@ -102,7 +113,101 @@ def DrawParabola(app):
         if getattr(app, 'backgroundMode', None) == "offset" and hasattr(app, 'zoomBackgroundPara'):
             app.ax_image.plot(app.zoomBackgroundPara[0], app.zoomBackgroundPara[1], alpha=0.7,
                               linewidth=1.5, color='lime', linestyle='--')
+    DrawParticleLabels(app)
     app.imageCanvas.draw()
+
+
+def DrawSelectedParticleLabels(app):
+    DrawParticleLabels(app)
+    app.imageCanvas.draw()
+
+
+def ParticleLabelList():
+    return [
+        (1, 1, "H-1"),
+        (12, 6, "C-6"),
+        (16, 8, "O-8"),
+        (16, 7, "O-7"),
+        (12, 5, "C-5"),
+        (16, 6, "O-6"),
+        (12, 4, "C-4"),
+        (16, 5, "O-5"),
+        (12, 3, "C-3"),
+        (16, 4, "O-4"),
+        (12, 2, "C-2"),
+        (12, 1, "C-1"),
+    ]
+
+
+def DrawParticleLabels(app):
+    if not getattr(app, "isShowParticleLabel", False):
+        return
+    if not hasattr(app, "specData") or len(app.specData) == 0:
+        return
+
+    colors = [
+        "#ff3b30", "#007aff", "#34c759", "#ff9500",
+        "#af52de", "#00c7be", "#ff2d55", "#5856d6",
+        "#8e8e93", "#64d2ff", "#bf5af2", "#ffd60a",
+    ]
+    boundary = app.imageData.shape[1]
+    energy = np.asarray(app.specData[0], dtype=float)
+    energy = energy[np.isfinite(energy) & (energy > 0)]
+    if energy.size == 0:
+        return
+    for i, (A, Z, labels) in enumerate(SelectedParticleGroups(app)):
+        label = " / ".join(labels)
+        line = TPSParabola.Parabola(app.TPS, energy, app.X0, app.Y0, A, Z, boundary)
+        if app.zoomed:
+            line = TPSParabola.ZoomPara(line, app.zoomToOrigin, app.zoomPic.shape[1])
+        DrawParticleLabelOnly(app, line, label, colors[i % len(colors)])
+
+
+def SelectedParticleGroups(app):
+    enabled = getattr(app, "enabledParticleLabels", None)
+    groups = {}
+    for A, Z, label in ParticleLabelList():
+        if enabled is not None and label not in enabled:
+            continue
+        divisor = gcd(int(A), int(Z))
+        key = (int(A) // divisor, int(Z) // divisor)
+        if key not in groups:
+            groups[key] = {"A": A, "Z": Z, "labels": []}
+        groups[key]["labels"].append(label)
+    return [(item["A"], item["Z"], item["labels"]) for item in groups.values()]
+
+
+def DrawParticleLabelOnly(app, line, label, color):
+    if line is None or len(line) < 2 or line[0].size == 0:
+        return
+
+    x = np.asarray(line[0], dtype=float)
+    y = np.asarray(line[1], dtype=float)
+    xlim = app.ax_image.get_xlim()
+    ylim = app.ax_image.get_ylim()
+    xmin, xmax = min(xlim), max(xlim)
+    ymin, ymax = min(ylim), max(ylim)
+
+    margin_x = max(8, 0.02 * (xmax - xmin))
+    margin_y = max(8, 0.02 * (ymax - ymin))
+    visible = (
+        np.isfinite(x) & np.isfinite(y) &
+        (x >= xmin + margin_x) & (x <= xmax - margin_x) &
+        (y >= ymin + margin_y) & (y <= ymax - margin_y)
+    )
+    idxs = np.flatnonzero(visible)
+    if idxs.size == 0:
+        return
+
+    # The trajectory array runs from higher energy to lower energy, so choose
+    # a visible point near the low-energy end while keeping away from the edge.
+    label_idx = idxs[min(idxs.size - 1, max(0, int(idxs.size * 0.85)))]
+    app.ax_image.text(
+        x[label_idx], y[label_idx], label,
+        color='white', fontsize=11, fontweight='bold',
+        ha='left', va='center',
+        bbox=dict(facecolor=color, alpha=0.78, edgecolor='none', boxstyle='round,pad=0.2')
+    )
 
 
 def DrawOrigin(app):
@@ -127,10 +232,10 @@ def DrawAnalysingSpec(app):
     else:
         for i in range(len(app.analysingDataList)):
             if isinstance(app.cutoffEnergyList[i], str):
-                app.ax_spec.semilogy(app.analysingDataList[i][0], app.analysingDataList[i][1], label=str(
+                _plot_spectrum_line(app, app.analysingDataList[i][0], app.analysingDataList[i][1], label=str(
                     os.path.splitext(os.path.basename(app.analysingFileList[i]))[0]) + '--NaN')
             else:
-                app.ax_spec.semilogy(app.analysingDataList[i][0], app.analysingDataList[i][1], label=str(
+                _plot_spectrum_line(app, app.analysingDataList[i][0], app.analysingDataList[i][1], label=str(
                     os.path.splitext(os.path.basename(app.analysingFileList[i]))[0]) + '--' + str(
                     app.cutoffEnergyList[i]) + 'MeV')
         _finish_spectrum_layout(app)

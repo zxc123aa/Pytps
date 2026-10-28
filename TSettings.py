@@ -59,6 +59,17 @@ def TPSinit(app):
 
 
 def getList(app):
+    configured_path = os.fspath(app.imagePath)
+    fallback_path = os.path.join(".", "sample_data", "PW-TPS-stability")
+
+    if not os.path.isdir(configured_path):
+        if os.path.isdir(fallback_path):
+            print(f"[TSettings] 图像路径不存在：{configured_path}，已切换到样例数据：{fallback_path}")
+            app.imagePath = fallback_path
+        else:
+            print(f"[TSettings] 图像路径不存在：{configured_path}，样例数据也不存在，使用当前目录。")
+            app.imagePath = "."
+
     fileList = os.listdir(app.imagePath)
     imageList = []
     for i in range(len(fileList)):
